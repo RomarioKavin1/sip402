@@ -1,0 +1,36 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# env & secrets — never commit keys
+.env
+.env.*
+!.env.example
+*.key
+secrets/
+
+# build output
+dist/
+.next/
+out/
+build/
+*.tsbuildinfo
+
+# logs
+*.log
+npm-debug.log*
+
+# os / editor
+.DS_Store
+.idea/
+*.swp
+
+# claude local settings (machine-specific permission allowlist)
+.claude/settings.local.json
+
+# scratch
+/tmp/
+scratch/
+
+# design / research / planning — kept local only, not part of the published repo
+docs/
