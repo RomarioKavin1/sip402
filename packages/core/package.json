@@ -4,12 +4,25 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "rail-proof": "tsx scripts/rail-proof.ts"
   },
-  "dependencies": { "viem": "^2.21.0" },
-  "devDependencies": { "vitest": "^2.1.0" }
+  "dependencies": {
+    "@metamask/smart-accounts-kit": "1.6.0",
+    "dotenv": "^17.4.2",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "vitest": "^2.1.0"
+  }
 }
