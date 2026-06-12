@@ -1,0 +1,33 @@
+{
+  "name": "@sip402/server",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "server-proof": "tsx scripts/server-proof.ts"
+  },
+  "dependencies": {
+    "@sip402/core": "workspace:*",
+    "@sip402/client": "workspace:*",
+    "@metamask/smart-accounts-kit": "1.6.0",
+    "@hono/node-server": "^1.13.0",
+    "hono": "^4.6.0",
+    "dotenv": "^17.4.2",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "tsx": "^4.19.0",
+    "vitest": "^2.1.0"
+  }
+}
