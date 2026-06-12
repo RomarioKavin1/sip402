@@ -128,11 +128,14 @@ export function createDirectRedeemSettler(opts: {
         callData: transferExec.callData,
       });
 
-      // Encode the redeemDelegations call (proven rail-proof.ts pattern).
-      // delegations is PermissionContext[] where each PermissionContext = Delegation[] | Hex.
-      // One delegation-chain = [signedDelegation] (array of Delegation for the chain).
+      // Encode the redeemDelegations call (proven rail-proof.ts / server pattern).
+      // `delegations` is PermissionContext[], where each PermissionContext is the
+      // FULL signed delegation chain — either an encoded Hex blob or a Delegation[].
+      // `signedDelegation` here IS that full permission context (a Hex chain from
+      // client.createCommitment, or a Delegation[]); it is one entry in delegations[].
+      // (Do NOT wrap it again as [[...]] — that double-nests and the redemption reverts.)
       const data = contracts.DelegationManager.encode.redeemDelegations({
-        delegations: [[signedDelegation as Delegation]],
+        delegations: [signedDelegation as Hex | Delegation[]],
         modes: [ExecutionMode.SingleDefault],
         executions: [[execution]],
       });
