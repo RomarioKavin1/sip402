@@ -15,7 +15,7 @@ dist/
 out/
 build/
 *.tsbuildinfo
-media/
+/media/
 # logs
 *.log
 npm-debug.log*
@@ -33,4 +33,6 @@ npm-debug.log*
 scratch/
 
 # design / research / planning — kept local only, not part of the published repo
-docs/
+# anchored to the repo root so it does NOT match app source dirs like
+# apps/site/app/docs/ (the marketing docs page).
+/docs/
