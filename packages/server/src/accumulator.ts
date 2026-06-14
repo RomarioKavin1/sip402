@@ -53,7 +53,6 @@ import {
   DEFAULT_RPC_URL,
   IS_MAINNET,
   buildTransferExecution,
-  createOneShotSettler,
 } from "@sip402/core";
 import type { Commitment } from "@sip402/client";
 
@@ -239,21 +238,24 @@ export class CommitmentAccumulator {
     return txHash;
   }
 
-  // ── MAINNET: relay each commitment via 1Shot (gasless, USDC fees) ──────────
-  async #flushViaRelayer(batch: PendingCommitment[]): Promise<string> {
-    let lastTaskId = "";
-    for (const { commitment, amountAtoms } of batch) {
-      const settler = createOneShotSettler({
-        permissionContext: commitment.permissionContext,
-      });
-      const { txHash } = await settler.settle({
-        signedDelegation: commitment,
-        payTo: this.#sellerAddress,
-        atoms: amountAtoms,
-      });
-      lastTaskId = txHash;
-    }
-    return lastTaskId;
+  // ── MAINNET: seller-side relay of buyer commitments via 1Shot ──────────────
+  //
+  // Not wired. The proven 1Shot mainnet path is BUYER-side: `createOneShotSettler`
+  // signs a delegation from the buyer's own EOA and the relayer redeems it gaslessly
+  // (see packages/splitter/scripts/mainnet-e2e.ts — proven on Base mainnet, gas in
+  // USDC, owner ETH delta 0). For the SELLER to redeem a buyer's *commitment chain*
+  // through 1Shot, the commitment's leaf delegate must be 1Shot's `targetAddress`
+  // (not the seller), which is a different commitment construction than the testnet
+  // binding uses. That seller-relay variant is future work; on mainnet today, the
+  // buyer drives settlement via the OneShotSettler. The testnet seller path
+  // (#flushBatchDirect) is fully proven and used.
+  async #flushViaRelayer(_batch: PendingCommitment[]): Promise<string> {
+    throw new Error(
+      "CommitmentAccumulator seller-side 1Shot relay is not wired on mainnet. " +
+        "The proven mainnet path is buyer-side (createOneShotSettler); see " +
+        "packages/splitter/scripts/mainnet-e2e.ts. Use SIP_NETWORK=base-sepolia for the " +
+        "direct seller batch-redeem path.",
+    );
   }
 }
 

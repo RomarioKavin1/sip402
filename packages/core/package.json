@@ -1,6 +1,6 @@
 {
   "name": "@sip402/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "sip402 core — chain config, sip accounting, settlement rail (DirectRedeem/1Shot relayer), and ERC-7710 redemption primitives.",
   "license": "MIT",
   "author": "Romario Kavin",

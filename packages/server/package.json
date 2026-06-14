@@ -1,6 +1,6 @@
 {
   "name": "@sip402/server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "sip402 seller side — verify-by-simulation, accumulate commitments, batch-redeem, and x402 HTTP middleware.",
   "license": "MIT",
   "author": "Romario Kavin",

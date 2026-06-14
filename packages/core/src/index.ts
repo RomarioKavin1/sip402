@@ -1,4 +1,4 @@
-export const SIP402_VERSION = "0.1.0";
+export const SIP402_VERSION = "0.1.1";
 
 export * from "./chain.js";
 export * from "./session.js";
