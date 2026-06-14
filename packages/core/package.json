@@ -43,7 +43,8 @@
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "rail-proof": "tsx scripts/rail-proof.ts"
+    "rail-proof": "tsx scripts/rail-proof.ts",
+    "oneshot-mainnet-proof": "SIP_NETWORK=base tsx scripts/oneshot-mainnet-proof.ts"
   },
   "dependencies": {
     "@metamask/smart-accounts-kit": "1.6.0",

@@ -18,13 +18,21 @@ import {
   http,
   encodeFunctionData,
   erc20Abi,
+  getAddress,
+  bytesToHex,
+  parseUnits,
   type Address,
   type Hex,
   type LocalAccount,
 } from "viem";
+import { randomBytes } from "node:crypto";
 import {
   contracts,
   createExecution,
+  createDelegation,
+  toMetaMaskSmartAccount,
+  Implementation,
+  ScopeType,
   ExecutionMode,
   getSmartAccountsEnvironment,
   type Delegation,
@@ -38,7 +46,15 @@ import {
   ONESHOT_TARGET_ADDRESS,
   ONESHOT_RELAYER_URL,
 } from "./chain.js";
-import { send7710Transaction } from "./oneshot.js";
+import {
+  estimate7710Transaction,
+  send7710Transaction,
+  pollUntilTerminal,
+  toRelayerJson,
+  getCapabilities,
+  type AuthorizationListEntry,
+  type Send7710Params,
+} from "./oneshot.js";
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -60,7 +76,12 @@ export interface Settler {
    * of `atoms` to `payTo`.
    */
   settle(args: {
-    signedDelegation: unknown;
+    /**
+     * The full signed permission context for DirectRedeemSettler (a Hex chain or
+     * Delegation[]). OneShotSettler signs its own delegation from ownerAccount,
+     * so it is optional there.
+     */
+    signedDelegation?: unknown;
     payTo: Address;
     atoms: bigint;
   }): Promise<SettleResult>;
@@ -118,6 +139,9 @@ export function createDirectRedeemSettler(opts: {
 
   return {
     async settle({ signedDelegation, payTo, atoms }) {
+      if (signedDelegation === undefined || signedDelegation === null) {
+        throw new Error("DirectRedeemSettler requires a signedDelegation (permission context)");
+      }
       // Build the USDC transfer execution
       const transferExec = buildTransferExecution(payTo, atoms);
 
@@ -165,19 +189,36 @@ export function createDirectRedeemSettler(opts: {
  * NOTE: This settler is MAINNET ONLY (Base, chainId 8453).
  * It will not be exercised on testnet — ONESHOT_TARGET_ADDRESS is undefined on Base Sepolia.
  *
- * Uses the 1Shot relayer to submit the ERC-7710 delegation redemption transaction
- * gaslessly, with fees deducted in USDC from the session budget.
+ * Performs the PROVEN 1Shot EIP-7702 + gas-in-USDC flow (see
+ * scripts/oneshot-mainnet-proof.ts, proven on Base mainnet tx
+ * 0x26a44ffedefb113e6a6c1aa266985076684dea9faaea097f92e4f3e1731940e9):
  *
- * Wiring the permissionContext (the signed delegation blob) is the caller's
- * responsibility; the opts object is intentionally open for future extension.
+ *   1. getCapabilities -> targetAddress (delegation `to`) + feeCollector.
+ *   2. Upgrade the signer EOA to a Stateless7702 delegator smart account; on
+ *      first use sign an EIP-7702 authorization (the relayer lands it in the
+ *      redeem tx, so the EOA pays NO ETH).
+ *   3. Create + sign ONE delegation scoped to (fee + work) USDC, `to` = targetAddress.
+ *   4. estimate7710Transaction (mock fee >= minFee) -> requiredPaymentAmount + context;
+ *      if the fee differs, re-sign at the exact fee and re-estimate.
+ *   5. send7710Transaction({ context, authorizationList }) -> taskId.
+ *   6. pollUntilTerminal -> on-chain txHash (status 200).
+ *
+ * The settler signs delegations itself from `ownerAccount`, so the caller does
+ * NOT need to pre-build a permission context. `signedDelegation` is accepted for
+ * interface symmetry with DirectRedeemSettler but is not required.
  */
 export function createOneShotSettler(opts: {
-  /** The permission context (signed delegation) to pass to the relayer. */
-  permissionContext?: Hex;
+  /** The signer EOA that owns the USDC and authorizes the relayer (the delegator). */
+  ownerAccount: LocalAccount;
+  /** Optional override for the RPC URL (defaults to chain.ts DEFAULT_RPC_URL). */
+  rpcUrl?: string;
   /** Optional override for the 1Shot relayer URL. */
   relayerUrl?: string;
+  /** Optional webhook URL for relayer status events (≤256 chars). */
+  destinationUrl?: string;
 }): Settler {
   const relayerUrl = opts.relayerUrl ?? ONESHOT_RELAYER_URL;
+  const rpcUrl = opts.rpcUrl ?? DEFAULT_RPC_URL;
 
   if (!ONESHOT_TARGET_ADDRESS) {
     // Warn at creation time if this is accidentally used on testnet.
@@ -187,8 +228,11 @@ export function createOneShotSettler(opts: {
     );
   }
 
+  const publicClient = createPublicClient({ chain: CHAIN, transport: http(rpcUrl) });
+  const env = getSmartAccountsEnvironment(CHAIN_ID);
+
   return {
-    async settle({ signedDelegation, payTo, atoms }) {
+    async settle({ payTo, atoms }) {
       if (!ONESHOT_TARGET_ADDRESS) {
         throw new Error(
           "OneShotSettler is mainnet-only (ONESHOT_TARGET_ADDRESS undefined). " +
@@ -196,45 +240,135 @@ export function createOneShotSettler(opts: {
         );
       }
 
-      // Build the USDC transfer execution callData
-      const { callData } = buildTransferExecution(payTo, atoms);
+      const eoa = opts.ownerAccount;
 
-      // Send via the 1Shot relayer's send7710Transaction method.
-      // The relayer submits the delegation redemption and pays gas, recovering
-      // its fee in USDC via the session's permission context.
-      // The permission context must be the ABI-encoded delegation chain expected by
-      // the relayer (resolved on mainnet wiring). We do not guess it from the signature:
-      // a wrong context produces a silent bad relayer call, so require it explicitly.
-      const permissionContext =
-        opts.permissionContext ??
-        (typeof (signedDelegation as { permissionContext?: Hex }).permissionContext === "string"
-          ? (signedDelegation as { permissionContext: Hex }).permissionContext
-          : undefined);
-      if (!permissionContext) {
-        throw new Error(
-          "OneShotSettler requires an explicit permissionContext (the ABI-encoded delegation chain). " +
-          "Pass it via createOneShotSettler({ permissionContext }) or on the signedDelegation. " +
-          "Refusing to send a relayer call with an unresolved context."
-        );
+      // [1] Capabilities — authoritative targetAddress (delegation `to`) + feeCollector.
+      const caps = await getCapabilities(String(CHAIN_ID), relayerUrl);
+      const chainCaps = caps[String(CHAIN_ID)];
+      if (!chainCaps) {
+        throw new Error(`1Shot relayer has no capabilities for chain ${CHAIN_ID}`);
       }
+      const { targetAddress, feeCollector } = chainCaps;
 
-      const result = await send7710Transaction({
-        relayerUrl,
-        chainId: String(CHAIN_ID),
-        permissionContext,
-        // The execution: transfer USDC to payTo
-        target: USDC,
-        callData,
-        value: "0x0",
+      // [2] Stateless7702 delegator smart account (the EOA itself).
+      // Cast client: the kit bundles its own viem types, which differ structurally
+      // from ours despite being runtime-compatible (proven in oneshot-mainnet-proof.ts).
+      const smartAccount = await toMetaMaskSmartAccount({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        client: publicClient as any,
+        implementation: Implementation.Stateless7702,
+        address: eoa.address,
+        signer: { account: eoa },
       });
 
-      if (!result.taskId) {
-        throw new Error(`1Shot relayer returned no taskId: ${JSON.stringify(result)}`);
+      // First use: sign an EIP-7702 authorization so the relayer upgrades the EOA
+      // to the stateless delegator in-flight (EOA pays no ETH). Skip if already upgraded.
+      const code = await publicClient.getCode({ address: eoa.address });
+      const needsUpgrade = !code || code === "0x";
+      let authorizationList: AuthorizationListEntry[] | undefined;
+      if (needsUpgrade) {
+        const nonce = await publicClient.getTransactionCount({
+          address: eoa.address,
+          blockTag: "pending",
+        });
+        if (typeof eoa.signAuthorization !== "function") {
+          throw new Error(
+            "ownerAccount cannot sign EIP-7702 authorizations (needs a LocalAccount from privateKeyToAccount)"
+          );
+        }
+        const auth = await eoa.signAuthorization({
+          chainId: CHAIN_ID,
+          contractAddress: getAddress(env.implementations.EIP7702StatelessDeleGatorImpl),
+          nonce,
+        });
+        authorizationList = [
+          {
+            address: auth.address,
+            chainId: auth.chainId,
+            nonce: auth.nonce,
+            r: auth.r,
+            s: auth.s,
+            yParity: auth.yParity ?? 0,
+          },
+        ];
       }
 
-      // The 1Shot relayer is async; return the taskId as txHash for polling.
-      // Callers that need confirmation can poll getStatus(taskId).
-      return { txHash: result.taskId };
+      // [3] Build + sign ONE delegation scoped to (fee + work), `to` = targetAddress.
+      const buildBundle = async (feeAmount: bigint): Promise<Send7710Params> => {
+        const delegation = createDelegation({
+          to: targetAddress,
+          from: smartAccount.address,
+          environment: smartAccount.environment,
+          salt: bytesToHex(Uint8Array.from(randomBytes(32))) as Hex,
+          scope: {
+            type: ScopeType.Erc20TransferAmount,
+            tokenAddress: USDC,
+            maxAmount: feeAmount + atoms,
+          },
+        });
+        const signature = await smartAccount.signDelegation({ delegation });
+
+        const feeCalldata = encodeFunctionData({
+          abi: erc20Abi,
+          functionName: "transfer",
+          args: [feeCollector, feeAmount],
+        });
+        const { callData: workCalldata } = buildTransferExecution(payTo, atoms);
+
+        return {
+          relayerUrl,
+          chainId: String(CHAIN_ID),
+          transactions: [
+            {
+              permissionContext: [
+                toRelayerJson({ ...delegation, signature }) as Record<string, unknown>,
+              ],
+              executions: [
+                { target: USDC, value: "0", data: feeCalldata },
+                { target: USDC, value: "0", data: workCalldata },
+              ],
+            },
+          ],
+          ...(authorizationList ? { authorizationList } : {}),
+          ...(opts.destinationUrl ? { destinationUrl: opts.destinationUrl } : {}),
+        };
+      };
+
+      // [4] Estimate with a mock fee >= minFee ($0.01); re-sign at the exact fee if needed.
+      const mockFee = parseUnits("0.01", 6);
+      let params = await buildBundle(mockFee);
+      let estimate = await estimate7710Transaction(params);
+      if (!estimate.success) {
+        throw new Error(`1Shot estimate failed: ${estimate.error ?? "(no error)"}`);
+      }
+      const requiredFee = BigInt(estimate.requiredPaymentAmount ?? "0");
+      if (requiredFee !== mockFee) {
+        params = await buildBundle(requiredFee);
+        estimate = await estimate7710Transaction(params);
+        if (!estimate.success) {
+          throw new Error(`1Shot re-estimate failed: ${estimate.error ?? "(no error)"}`);
+        }
+      }
+      if (!estimate.context) {
+        throw new Error("1Shot estimate returned no price-lock context");
+      }
+
+      // [5] Send with the signed price-lock context.
+      const taskId = await send7710Transaction({ ...params, context: estimate.context });
+
+      // [6] Poll until terminal; return the on-chain tx hash.
+      const final = await pollUntilTerminal(taskId, { relayerUrl });
+      if (final.status !== 200) {
+        throw new Error(
+          `1Shot relay failed (status ${final.status}): ` +
+            (final.message ?? JSON.stringify(final.data))
+        );
+      }
+      const txHash = (final.receipt?.transactionHash ?? final.hash) as string;
+      if (!txHash) {
+        throw new Error("1Shot confirmed but returned no tx hash");
+      }
+      return { txHash };
     },
   };
 }

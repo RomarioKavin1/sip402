@@ -1,32 +1,44 @@
 /**
- * oneshot.ts — 1Shot relayer JSON-RPC client.
+ * oneshot.ts — 1Shot public relayer JSON-RPC client.
  *
- * Implements the 1Shot relayer API used for gasless ERC-7710 delegation
- * redemption on mainnet (Base, chainId 8453). All methods POST to the relayer
- * endpoint defined in chain.ts (ONESHOT_RELAYER_URL).
+ * Implements the 1Shot relayer API used for gas-abstracted ERC-7710 delegation
+ * redemption (gas paid in USDC) on mainnet (Base, chainId 8453). All methods
+ * POST to the relayer endpoint defined in chain.ts (ONESHOT_RELAYER_URL).
  *
  * Methods:
- *   getCapabilities(chainId)                     — relayer_getCapabilities
- *   getFeeData(chainId, token)                   — relayer_getFeeData
- *   send7710Transaction(params)                  — relayer_send7710Transaction
- *   getStatus(taskId)                            — relayer_getStatus
+ *   getCapabilities(chainIds)                  — relayer_getCapabilities
+ *   getFeeData(chainId, token)                 — relayer_getFeeData
+ *   estimate7710Transaction(params)            — relayer_estimate7710Transaction
+ *   send7710Transaction(params)                — relayer_send7710Transaction
+ *   getStatus(taskId)                          — relayer_getStatus
  *
- * NOTE: send7710Transaction and getStatus are for MAINNET use only.
- * getCapabilities/getFeeData can be called on mainnet for configuration checks.
+ * NOTE: estimate/send/getStatus are MAINNET use only (the relayer's mainnet
+ * endpoint). getCapabilities/getFeeData can be called for configuration checks.
  *
- * ACTUAL API RESPONSE SHAPES (verified 2026-06-13 against live relayer):
+ * PROVEN 2026-06-14 on Base mainnet (oneshot-mainnet-proof.ts):
+ *   tx 0x26a44ffedefb113e6a6c1aa266985076684dea9faaea097f92e4f3e1731940e9
+ *   — EOA upgraded via EIP-7702 + USDC fee to feeCollector, gas paid by relayer.
  *
- *   getCapabilities("8453") =>
+ * ACTUAL API RESPONSE SHAPES (verified against live relayer):
+ *
+ *   getCapabilities(["8453"]) =>
  *     { "8453": { feeCollector, targetAddress, tokens: [{address, symbol, decimals}] } }
  *
- *   getFeeData("8453", usdcAddress) =>
- *     { chainId, token: {decimals, address, symbol, name}, rate, minFee: "0.01",
- *       expiry, gasPrice, feeCollector, targetAddress, context: "<json string>" }
+ *   estimate7710Transaction(sendParams without context) =>
+ *     { success, requiredPaymentAmount: "<atoms>", gasUsed: {"8453":"<n>"},
+ *       context: "<signed price-lock>", error? }
  *
- *   Note: minFee is a DECIMAL string (e.g. "0.01"), NOT integer atoms.
+ *   send7710Transaction(sendParams + context [+ authorizationList]) => "<taskId hex>"
+ *
+ *   getStatus({id, logs}) => { id, chainId, status: 100|110|200|400|500,
+ *       hash?, receipt?: { transactionHash }, message?, data? }
+ *
+ *   permissionContext is an ARRAY OF DELEGATION OBJECTS (bigints serialized to
+ *   0x-hex via toRelayerJson), NOT an encoded hex blob.
  */
 
 import type { Address, Hex } from "viem";
+import { bytesToHex } from "viem/utils";
 import { ONESHOT_RELAYER_URL } from "./chain.js";
 
 // ---------------------------------------------------------------------------
@@ -66,7 +78,7 @@ async function rpcCall<T>(
   if (json.error) {
     throw new Error(
       `1Shot RPC error ${json.error.code}: ${json.error.message}` +
-      (json.error.data ? ` — ${JSON.stringify(json.error.data)}` : "")
+        (json.error.data ? ` — ${JSON.stringify(json.error.data)}` : "")
     );
   }
 
@@ -77,6 +89,27 @@ async function rpcCall<T>(
   return json.result;
 }
 
+/**
+ * Convert a MetaMask delegation struct (with native bigints / Uint8Arrays) into
+ * a JSON-safe shape the relayer accepts: bigint -> 0x-hex string, Uint8Array ->
+ * hex. Run each signed delegation through this before putting it in
+ * `permissionContext`.
+ */
+export function toRelayerJson(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "bigint") return `0x${value.toString(16)}`;
+  if (value instanceof Uint8Array) return bytesToHex(value);
+  if (Array.isArray(value)) return value.map(toRelayerJson);
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = toRelayerJson(v);
+    }
+    return out;
+  }
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Public types (matching actual API response shapes)
 // ---------------------------------------------------------------------------
@@ -84,8 +117,10 @@ async function rpcCall<T>(
 /** Token descriptor returned by getCapabilities. */
 export interface RelayerToken {
   address: Address;
-  symbol: string;
-  decimals: string;
+  symbol?: string;
+  name?: string;
+  /** May arrive as a numeric string (e.g. "6"). */
+  decimals: number | string;
 }
 
 /**
@@ -94,60 +129,117 @@ export interface RelayerToken {
  */
 export interface ChainCapabilities {
   feeCollector: Address;
-  /** The 1Shot target contract address on this chain. */
+  /** The 1Shot redemption account on this chain — the delegation `to` MUST equal this. */
   targetAddress: Address;
   /** ERC-20 tokens accepted for fees on this chain. */
   tokens: RelayerToken[];
 }
 
-/**
- * Result of getCapabilities — a map from chainId string to ChainCapabilities.
- * e.g. { "8453": { feeCollector, targetAddress, tokens } }
- */
+/** Result of getCapabilities — a map from chainId string to ChainCapabilities. */
 export type RelayerCapabilities = Record<string, ChainCapabilities>;
 
-/** Result of getFeeData. minFee is a DECIMAL string (e.g. "0.01" USDC). */
+/** Result of getFeeData — a rough pre-bundle quote. */
 export interface RelayerFeeData {
   chainId: string;
-  /** Fee token descriptor. */
-  token: { address: Address; symbol: string; decimals: number; name: string };
-  /** Exchange rate. */
+  token: { address: Address; symbol?: string; decimals: number; name?: string };
   rate: number;
-  /** Minimum fee amount as a decimal string (NOT integer atoms), e.g. "0.01". */
+  /** Floor fee in token atoms (≈ $0.01). NOTE: live relayer sometimes returns a
+   *  decimal string (e.g. "0.01"); prefer estimate7710Transaction for exact atoms. */
   minFee: string;
   expiry: number;
-  gasPrice: string;
+  gasPrice: Hex;
   feeCollector: Address;
-  targetAddress: Address;
-  /** Opaque JSON string required when submitting a 7710 transaction. */
-  context: string;
+  targetAddress?: Address;
+  /** Signed price-lock context; pass verbatim to send7710Transaction.context. */
+  context?: string;
 }
 
+/** An ERC-7710 delegation object (kit `Delegation` run through toRelayerJson). */
+export type RelayerDelegation = Record<string, unknown>;
+
+/** One execution leg of a 7710 bundle. */
+export interface Execution7710 {
+  target: Address;
+  /** wei as decimal or 0x-hex string. */
+  value: string;
+  data: Hex;
+}
+
+/** One delegated transaction within a bundle. */
+export interface DelegatedTransaction7710 {
+  /** The delegation chain (length 1 for a direct delegation), each as JSON-safe object. */
+  permissionContext: RelayerDelegation[];
+  executions: Execution7710[];
+}
+
+/** An EIP-7702 authorization list entry (for in-flight EOA upgrade, ≤1 per request). */
+export interface AuthorizationListEntry {
+  address: Address;
+  chainId: number | string;
+  nonce: number | string;
+  r: Hex;
+  s: Hex;
+  yParity: number | string;
+}
+
+/** Params for estimate7710Transaction and send7710Transaction. */
 export interface Send7710Params {
   /** Override for the relayer URL (defaults to ONESHOT_RELAYER_URL). */
   relayerUrl?: string;
   /** EVM chain ID as a decimal string (e.g. "8453" for Base mainnet). */
   chainId: string;
-  /** The signed permission context (ERC-7710 delegation blob). */
-  permissionContext: Hex;
-  /** Target contract address for the execution. */
-  target: Address;
-  /** Encoded calldata for the execution. */
-  callData: Hex;
-  /** Native value in hex (usually "0x0" for ERC-20 transfers). */
-  value?: string;
+  /** Delegated transactions; merged server-side into one redeemDelegations batch. */
+  transactions: DelegatedTransaction7710[];
+  /** Signed price-lock context from estimate7710Transaction (required on send). */
+  context?: string;
+  /** At most one EIP-7702 authorization entry (first-use EOA upgrade). */
+  authorizationList?: AuthorizationListEntry[];
+  /** Optional webhook URL for status events (≤256 chars). */
+  destinationUrl?: string;
+  /** Optional opaque correlation label (≤256 chars), echoed in status/webhooks. */
+  memo?: string;
 }
 
-export interface Send7710Result {
-  /** Task ID returned by the relayer; use with getStatus() to poll completion. */
-  taskId: string;
+/** Result of estimate7710Transaction. */
+export interface Estimate7710Result {
+  success: boolean;
+  paymentTokenAddress?: Address;
+  paymentChain?: number;
+  /** Per-chain summed gas units (decimal strings). */
+  gasUsed?: Record<string, string>;
+  /** Required fee in payment-token atoms (floored at minFee), when success. */
+  requiredPaymentAmount?: string;
+  /** Signed price-lock quote; pass as params.context on send. */
+  context?: string;
+  contextByChainId?: Record<string, string>;
+  /** Present when success is false. */
+  error?: string;
 }
+
+/** Status codes returned by getStatus. */
+export type RelayerStatusCode = 100 | 110 | 200 | 400 | 500;
 
 export interface TaskStatus {
-  taskId: string;
-  status: "pending" | "submitted" | "confirmed" | "failed";
-  txHash?: string;
-  error?: string;
+  id: Hex;
+  chainId: string;
+  createdAt?: number;
+  /** 100 Pending | 110 Submitted | 200 Confirmed | 400 Rejected | 500 Reverted. */
+  status: RelayerStatusCode;
+  /** Present at 110+ (the on-chain tx hash). */
+  hash?: Hex;
+  /** Present at 200 (confirmed). */
+  receipt?: {
+    transactionHash?: Hex;
+    blockHash?: Hex;
+    blockNumber?: number;
+    gasUsed?: string;
+    logs?: unknown[];
+  };
+  /** Present at 400 (rejected). */
+  message?: string;
+  /** Present at 500 (reverted) — revert data. */
+  data?: unknown;
+  memo?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,28 +247,23 @@ export interface TaskStatus {
 // ---------------------------------------------------------------------------
 
 /**
- * relayer_getCapabilities — returns a map of chain capabilities including
- * supported target addresses and accepted fee tokens.
+ * relayer_getCapabilities — returns a map of chain capabilities including the
+ * target address (delegation `to`), feeCollector, and accepted fee tokens.
  *
- * @param chainId  Decimal string chain ID, e.g. "8453" for Base mainnet.
- * @param relayerUrl  Optional override for the relayer URL.
+ * @param chainIds   Decimal string chain IDs, e.g. ["8453"] for Base mainnet.
+ * @param relayerUrl Optional override for the relayer URL.
  */
 export async function getCapabilities(
-  chainId: string,
+  chainIds: string | string[],
   relayerUrl: string = ONESHOT_RELAYER_URL
 ): Promise<RelayerCapabilities> {
-  return rpcCall<RelayerCapabilities>(relayerUrl, "relayer_getCapabilities", [chainId]);
+  const params = Array.isArray(chainIds) ? chainIds : [chainIds];
+  return rpcCall<RelayerCapabilities>(relayerUrl, "relayer_getCapabilities", params);
 }
 
 /**
- * relayer_getFeeData — returns the minimum fee and opaque context string
- * required to submit a 7710 transaction using `token` as the fee currency.
- *
- * Note: minFee is returned as a decimal string (e.g. "0.01"), not integer atoms.
- *
- * @param chainId  Decimal string chain ID.
- * @param token    ERC-20 token address (e.g. USDC on Base mainnet).
- * @param relayerUrl  Optional override for the relayer URL.
+ * relayer_getFeeData — rough pre-bundle quote (gasPrice, rate, minFee, context).
+ * Prefer estimate7710Transaction once the signed bundle exists.
  */
 export async function getFeeData(
   chainId: string,
@@ -187,30 +274,62 @@ export async function getFeeData(
 }
 
 /**
- * relayer_send7710Transaction — submit an ERC-7710 delegation redemption
- * transaction to the 1Shot relayer for gasless execution.
+ * relayer_estimate7710Transaction — synchronous fee quote for a single-chain
+ * 7710 bundle. Validates delegations + simulates gas without creating a task.
+ * Pass the SAME params as send but WITHOUT `context`. Returns the required fee
+ * (in token atoms) and a signed price-lock `context` to pass to send.
  *
- * MAINNET ONLY. The relayer executes the transaction and recovers its fee
- * in USDC from the permission context.
- *
- * Returns a taskId that can be polled with getStatus().
+ * Check `result.success` before sending — validation failures come back in the
+ * result (not always as JSON-RPC errors).
+ */
+export async function estimate7710Transaction(
+  params: Send7710Params
+): Promise<Estimate7710Result> {
+  const { relayerUrl = ONESHOT_RELAYER_URL, context: _omit, ...rest } = params;
+  return rpcCall<Estimate7710Result>(relayerUrl, "relayer_estimate7710Transaction", rest);
+}
+
+/**
+ * relayer_send7710Transaction — submit an ERC-7710 delegated bundle for gasless
+ * execution (gas paid in USDC). MAINNET ONLY. Pass the signed price-lock
+ * `context` from estimate7710Transaction. Returns a taskId to poll with getStatus.
  */
 export async function send7710Transaction(
   params: Send7710Params
-): Promise<Send7710Result> {
+): Promise<Hex> {
   const { relayerUrl = ONESHOT_RELAYER_URL, ...rest } = params;
-  return rpcCall<Send7710Result>(relayerUrl, "relayer_send7710Transaction", rest);
+  return rpcCall<Hex>(relayerUrl, "relayer_send7710Transaction", rest);
 }
 
 /**
  * relayer_getStatus — poll the status of a previously submitted 7710 task.
  *
- * @param taskId    The task ID returned by send7710Transaction.
- * @param relayerUrl  Optional relayer URL override.
+ * @param taskId     The task ID returned by send7710Transaction.
+ * @param logs       Include EVM event logs in the receipt (default true).
+ * @param relayerUrl Optional relayer URL override.
  */
 export async function getStatus(
-  taskId: string,
+  taskId: Hex,
+  logs: boolean = true,
   relayerUrl: string = ONESHOT_RELAYER_URL
 ): Promise<TaskStatus> {
-  return rpcCall<TaskStatus>(relayerUrl, "relayer_getStatus", { taskId });
+  return rpcCall<TaskStatus>(relayerUrl, "relayer_getStatus", { id: taskId, logs });
+}
+
+/**
+ * Poll getStatus until a terminal status (200/400/500) or timeout. Returns the
+ * final status object. Throws on timeout.
+ */
+export async function pollUntilTerminal(
+  taskId: Hex,
+  opts: { relayerUrl?: string; intervalMs?: number; timeoutMs?: number } = {}
+): Promise<TaskStatus> {
+  const { relayerUrl = ONESHOT_RELAYER_URL, intervalMs = 3000, timeoutMs = 5 * 60_000 } = opts;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const s = await getStatus(taskId, true, relayerUrl);
+    if (s.status === 200 || s.status === 400 || s.status === 500) return s;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`1Shot getStatus timed out for task ${taskId}`);
 }
