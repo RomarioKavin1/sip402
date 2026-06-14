@@ -1,6 +1,29 @@
 {
   "name": "@sip402/splitter",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "sip402 reference seller — resell Venice AI inference billed per token via streaming on-chain draws.",
+  "license": "MIT",
+  "author": "Romario Kavin",
+  "homepage": "https://github.com/RomarioKavin1/sip402#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RomarioKavin1/sip402.git",
+    "directory": "packages/splitter"
+  },
+  "keywords": [
+    "x402",
+    "batch-settlement",
+    "erc-7710",
+    "erc-7715",
+    "eip-7702",
+    "metamask",
+    "smart-accounts",
+    "ai-agents",
+    "micropayments",
+    "usdc",
+    "base",
+    "1shot"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,6 +33,12 @@
       "types": "./dist/index.d.ts"
     }
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
