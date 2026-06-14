@@ -70,6 +70,13 @@ export interface SettleResult {
   txHash: string;
 }
 
+export interface BatchSettleResult extends SettleResult {
+  /** Number of commitments redeemed in this single transaction. */
+  count: number;
+  /** Sum of all commitment amounts settled in this transaction (atoms). */
+  totalAtoms: bigint;
+}
+
 export interface Settler {
   /**
    * Settle one sip: redeem the signed delegation to execute a USDC transfer
@@ -85,6 +92,19 @@ export interface Settler {
     payTo: Address;
     atoms: bigint;
   }): Promise<SettleResult>;
+
+  /**
+   * Batch-settle MANY commitments in ONE transaction (the batch-settlement
+   * scheme): redeem the permission context once per commitment within a single
+   * redeemDelegations call. The on-chain period enforcer accumulates across the
+   * batch, so an over-cap batch reverts atomically (the whole tx fails — the
+   * "dry tab"). Optional; implemented by DirectRedeemSettler.
+   */
+  settleBatch?(args: {
+    signedDelegation?: unknown;
+    payTo: Address;
+    atomsList: bigint[];
+  }): Promise<BatchSettleResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +197,43 @@ export function createDirectRedeemSettler(opts: {
       }
 
       return { txHash };
+    },
+
+    async settleBatch({ signedDelegation, payTo, atomsList }) {
+      if (signedDelegation === undefined || signedDelegation === null) {
+        throw new Error("DirectRedeemSettler requires a signedDelegation (permission context)");
+      }
+      if (!atomsList.length) {
+        throw new Error("settleBatch requires at least one commitment");
+      }
+
+      // One execution per commitment, all against the SAME permission context.
+      // redeemDelegations takes parallel arrays — N contexts / N modes / N
+      // executions — and runs them in one tx. The ERC20PeriodTransferEnforcer
+      // accumulates across them, so an over-cap batch reverts atomically.
+      const executions = atomsList.map((atoms) => {
+        const t = buildTransferExecution(payTo, atoms);
+        return [createExecution({ target: t.target, value: t.value, callData: t.callData })];
+      });
+
+      const data = contracts.DelegationManager.encode.redeemDelegations({
+        delegations: atomsList.map(() => signedDelegation as Hex | Delegation[]),
+        modes: atomsList.map(() => ExecutionMode.SingleDefault),
+        executions,
+      });
+
+      const txHash = await walletClient.sendTransaction({
+        to: env.DelegationManager as Address,
+        data,
+      });
+
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+      if (receipt.status === "reverted") {
+        throw new Error(`batch settle tx reverted: ${txHash}`);
+      }
+
+      const totalAtoms = atomsList.reduce((a, b) => a + b, 0n);
+      return { txHash, count: atomsList.length, totalAtoms };
     },
   };
 }
