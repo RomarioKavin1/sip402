@@ -87,16 +87,29 @@ export async function POST() {
     });
     // Fund the SESSION EOA — it is the grant's delegate and redeems the granted
     // permission on-chain directly (pays gas). Funded at open time so it is
-    // confirmed before "Run cascade" (avoids an RPC-lag race mid-run).
+    // confirmed before "Run" (avoids an RPC-lag race mid-run). Also fund the
+    // SELLER EOA a little: it pays gas for a one-time counterfactual-account
+    // deploy if the granting MetaMask account isn't deployed yet. Amounts kept
+    // small so a lightly-funded owner key can run the demo.
     const sessionEth = await publicClient.getBalance({ address: sessionAccount.address });
-    if (sessionEth < parseEther("0.01")) {
+    if (sessionEth < parseEther("0.0035")) {
       const fundHash = await walletClient.sendTransaction({
         to: sessionAccount.address,
-        value: parseEther("0.02"),
+        value: parseEther("0.005"),
         account: ownerAccount,
         chain: baseSepolia,
       });
       await publicClient.waitForTransactionReceipt({ hash: fundHash });
+    }
+    const sellerEth = await publicClient.getBalance({ address: seller.address });
+    if (sellerEth < parseEther("0.002")) {
+      const sellerFundHash = await walletClient.sendTransaction({
+        to: seller.address,
+        value: parseEther("0.003"),
+        account: ownerAccount,
+        chain: baseSepolia,
+      });
+      await publicClient.waitForTransactionReceipt({ hash: sellerFundHash });
     }
 
     pushEvent({

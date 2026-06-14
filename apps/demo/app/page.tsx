@@ -1,450 +1,802 @@
-import Link from "next/link";
-import HeroTicker from "./HeroTicker";
+"use client";
 
-// ── Proof links (real on-chain evidence; README "Proven on Base Sepolia") ────
+import { useState, useEffect, useRef, useCallback, Fragment } from "react";
 
-const SEPOLIA = "https://sepolia.basescan.org/tx";
-const MAINNET = "https://basescan.org/tx";
+// ── Types ──────────────────────────────────────────────────────────────────
 
-const testnetProof: Array<{ label: string; hash: string; href: string }> = [
-  {
-    label: "Periodic delegation · cumulative draws",
-    hash: "0xca04…b73b",
-    href: `${SEPOLIA}/0xca047bebde0805b071a3b2eb7d245d61c56ec77550e03635434c6dc20dd8b73b`,
-  },
-  {
-    label: "Over-cap draw reverted on-chain (dry tab)",
-    hash: "0xc478…2655",
-    href: `${SEPOLIA}/0xc478ba71bbaecb66efe3f65866adc6e57675baad05246b3cb4ac9f9c020a2655`,
-  },
-  {
-    label: "Commitment = redelegation · A2A depth-4 chain",
-    hash: "0xcc1b…b153",
-    href: `${SEPOLIA}/0xcc1ba35facadf92945c01b31da6a9574ceec36a27cddfd29bf36989e9356b153`,
-  },
-  {
-    label: "Batch redemption · 3 commitments in ONE tx",
-    hash: "0x3b95…d9fa",
-    href: `${SEPOLIA}/0x3b9583c3825612ef2a0bcc5ddbd75efc0ae73c3c897414700ec317a1bb41d9fa`,
-  },
-  {
-    label: "Streaming per-batch draws → dry-tab at $1.00",
-    hash: "0x5ba8…a931c",
-    href: `${SEPOLIA}/0x5ba8a54a8cd397cd6522d4dd70b4f690fa99fc7d30d11829bccd8711966a931c`,
-  },
-  {
-    label: "Revoke halts an agent mid-run",
-    hash: "0x9c2c…1a10f",
-    href: `${SEPOLIA}/0x9c2ccef0bceec5f82ca8d3ddf0d9a461b57b147ef9860285de874dcc1361a10f`,
-  },
-];
-
-const MAINNET_1SHOT =
-  "0x26a44ffedefb113e6a6c1aa266985076684dea9faaea097f92e4f3e1731940e9";
-const MAINNET_VENICE =
-  "0x2557becd49e3611b92ae089eb00d867672fcba4b61e2abfcbb6b98c010bc43e9";
-
-// ── small presentational atoms ───────────────────────────────────────────────
-
-function Kicker({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="font-mono text-xs uppercase tracking-[0.2em] text-amber">
-      {children}
-    </p>
-  );
+interface SettlementEntry {
+  agent: "writer" | "illustrator" | "researcher";
+  amountAtoms: bigint;
+  txHash?: string;
+  count?: number; // commitments batched into this one tx
+  reverted?: boolean; // batch reverted on-chain (cap reached)
+  at: number;
 }
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="mb-3 font-mono text-xs uppercase tracking-[0.2em] text-text-faint">
-      {children}
-    </p>
-  );
+interface DemoData {
+  treasury: string;
+  agent: string;
+  capUsd: number;
+  sellerAddress: string;
+  network?: string;
+  budgetUsd?: number;
+  sessionAddress?: string;
 }
 
-function ProofRow({
-  label,
-  hash,
-  href,
-}: {
-  label: string;
-  hash: string;
-  href: string;
-}) {
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="group flex items-center justify-between gap-4 border-b border-line-soft py-3 transition-colors last:border-0 hover:bg-ink-2"
-    >
-      <span className="text-sm text-text-dim transition-colors group-hover:text-text">
-        {label}
-      </span>
-      <span className="flex shrink-0 items-center gap-1.5 font-mono text-xs text-text-faint transition-colors group-hover:text-amber">
-        {hash}
-        <span aria-hidden>↗</span>
-      </span>
-    </a>
-  );
+// Base Sepolia
+const BASE_SEPOLIA_CHAIN_ID = 84532;
+const BASE_SEPOLIA_HEX = "0x14a34";
+const USDC_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+
+interface Eip1193Provider {
+  request: (args: { method: string; params?: unknown[] | object }) => Promise<unknown>;
+}
+declare global {
+  interface Window {
+    ethereum?: Eip1193Provider;
+  }
 }
 
-export default function Home() {
+interface AgentState {
+  drawn: bigint;
+  text: string;
+  revoked: boolean;
+}
+
+interface NetworkConfig {
+  isMainnet: boolean;
+  network: string;
+  basescanBase: string;
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function atomsToUsd(atoms: bigint): string {
+  return (Number(atoms) / 1_000_000).toFixed(6);
+}
+function shortAddr(addr: string) {
+  return addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : "";
+}
+
+// ── Page ─────────────────────────────────────────────────────────────────────
+
+export default function DemoPage() {
+  const [phase, setPhase] = useState<"idle" | "open" | "running" | "done">("idle");
+  const [demo, setDemo] = useState<DemoData | null>(null);
+  const [receipts, setReceipts] = useState<SettlementEntry[]>([]);
+  const [totalDrawn, setTotalDrawn] = useState<bigint>(0n);
+  const [writer, setWriter] = useState<AgentState>({ drawn: 0n, text: "", revoked: false });
+  const [illustrator, setIllustrator] = useState<AgentState>({ drawn: 0n, text: "", revoked: false });
+  const [researcher, setResearcher] = useState<AgentState>({ drawn: 0n, text: "", revoked: false });
+  const [statusLog, setStatusLog] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [granted, setGranted] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [account, setAccount] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+  const [netConfig, setNetConfig] = useState<NetworkConfig>({
+    isMainnet: false,
+    network: "base-sepolia",
+    basescanBase: "https://sepolia.basescan.org/tx",
+  });
+  const evtSourceRef = useRef<EventSource | null>(null);
+  const writerTextRef = useRef<HTMLDivElement>(null);
+  const illustratorTextRef = useRef<HTMLDivElement>(null);
+  const researcherTextRef = useRef<HTMLDivElement>(null);
+
+  const [tickerGlow, setTickerGlow] = useState(false);
+  const [capRevert, setCapRevert] = useState(false);
+
+  const addStatus = useCallback((msg: string) => {
+    setStatusLog((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 50));
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/config")
+      .then((r) => r.json())
+      .then((cfg) => setNetConfig(cfg as NetworkConfig))
+      .catch(() => {/* use default */});
+  }, []);
+
+  // ── SSE listener ──────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (phase === "idle") return;
+
+    const es = new EventSource("/api/events");
+    evtSourceRef.current = es;
+
+    es.onmessage = (e) => {
+      try {
+        const evt = JSON.parse(e.data) as {
+          type: string;
+          agent?: "writer" | "illustrator" | "researcher";
+          payload?: Record<string, unknown>;
+        };
+        if (evt.type === "ping") return;
+
+        if (evt.type === "settlement" && evt.agent) {
+          const agent = evt.agent;
+          const reverted = Boolean(evt.payload?.reverted);
+          const settledAtoms = BigInt((evt.payload?.amountAtoms as string) ?? "0");
+          const attemptedAtoms = evt.payload?.attemptedAtoms
+            ? BigInt(evt.payload.attemptedAtoms as string)
+            : settledAtoms;
+          const count = evt.payload?.count as number | undefined;
+          const entry: SettlementEntry = {
+            agent,
+            amountAtoms: reverted ? attemptedAtoms : settledAtoms,
+            txHash: evt.payload?.txHash as string | undefined,
+            count,
+            reverted,
+            at: (evt.payload?.at as number) ?? Date.now(),
+          };
+          setReceipts((prev) => [entry, ...prev].slice(0, 50));
+          if (reverted) {
+            // batch reverted atomically — nothing transferred; flash the cap
+            setCapRevert(true);
+            setTimeout(() => setCapRevert(false), 600);
+          } else {
+            setTotalDrawn((prev) => prev + settledAtoms);
+            setTickerGlow(true);
+            setTimeout(() => setTickerGlow(false), 600);
+            if (agent === "writer") setWriter((p) => ({ ...p, drawn: p.drawn + settledAtoms }));
+            else if (agent === "illustrator") setIllustrator((p) => ({ ...p, drawn: p.drawn + settledAtoms }));
+            else if (agent === "researcher") setResearcher((p) => ({ ...p, drawn: p.drawn + settledAtoms }));
+          }
+        }
+
+        if (evt.type === "agent_text" && evt.agent) {
+          const agent = evt.agent;
+          const text = (evt.payload?.text as string) ?? "";
+          if (agent === "writer") {
+            setWriter((p) => ({ ...p, text: p.text + text }));
+            requestAnimationFrame(() => {
+              if (writerTextRef.current) writerTextRef.current.scrollTop = writerTextRef.current.scrollHeight;
+            });
+          } else if (agent === "illustrator") {
+            setIllustrator((p) => ({ ...p, text: p.text + text }));
+            requestAnimationFrame(() => {
+              if (illustratorTextRef.current) illustratorTextRef.current.scrollTop = illustratorTextRef.current.scrollHeight;
+            });
+          } else if (agent === "researcher") {
+            setResearcher((p) => ({ ...p, text: p.text + text }));
+            requestAnimationFrame(() => {
+              if (researcherTextRef.current) researcherTextRef.current.scrollTop = researcherTextRef.current.scrollHeight;
+            });
+          }
+        }
+
+        if (evt.type === "status") {
+          const msg = (evt.payload?.msg as string) ?? JSON.stringify(evt.payload);
+          addStatus(msg);
+          if (msg === "Cascade complete") setPhase("done");
+          if (evt.agent && msg.includes("revoked")) {
+            const agent = evt.agent;
+            if (agent === "writer") setWriter((p) => ({ ...p, revoked: true }));
+            else if (agent === "illustrator") setIllustrator((p) => ({ ...p, revoked: true }));
+          }
+        }
+      } catch { /* ignore parse errors */ }
+    };
+
+    es.onerror = () => {
+      if (phase === "done") es.close();
+    };
+
+    return () => {
+      es.close();
+      evtSourceRef.current = null;
+    };
+  }, [phase, addStatus]);
+
+  // ── Actions ───────────────────────────────────────────────────────────────
+
+  // Ensure MetaMask is connected and on Base Sepolia.
+  async function handleConnect() {
+    setError(null);
+    if (typeof window === "undefined" || !window.ethereum) {
+      setError("MetaMask not detected. Install MetaMask (with Advanced Permissions support) to run the demo.");
+      return;
+    }
+    const ethereum = window.ethereum;
+    setBusy(true);
+    try {
+      addStatus("Connecting MetaMask...");
+      const accounts = (await ethereum.request({ method: "eth_requestAccounts" })) as string[];
+      const acct = accounts?.[0];
+      if (!acct) throw new Error("no MetaMask account connected");
+
+      const currentChain = (await ethereum.request({ method: "eth_chainId" })) as string;
+      if (currentChain?.toLowerCase() !== BASE_SEPOLIA_HEX) {
+        addStatus("Switching MetaMask to Base Sepolia...");
+        try {
+          await ethereum.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: BASE_SEPOLIA_HEX }],
+          });
+        } catch (switchErr) {
+          if ((switchErr as { code?: number })?.code === 4902) {
+            await ethereum.request({
+              method: "wallet_addEthereumChain",
+              params: [
+                {
+                  chainId: BASE_SEPOLIA_HEX,
+                  chainName: "Base Sepolia",
+                  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+                  rpcUrls: ["https://sepolia.base.org"],
+                  blockExplorerUrls: ["https://sepolia.basescan.org"],
+                },
+              ],
+            });
+          } else throw switchErr;
+        }
+      }
+      setAccount(acct);
+      setConnected(true);
+      addStatus(`Connected ${shortAddr(acct)} on Base Sepolia`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleOpen() {
+    setError(null);
+    setBusy(true);
+    setPhase("open");
+    setGranted(false);
+    setWriter({ drawn: 0n, text: "", revoked: false });
+    setIllustrator({ drawn: 0n, text: "", revoked: false });
+    setResearcher({ drawn: 0n, text: "", revoked: false });
+    setReceipts([]);
+    setTotalDrawn(0n);
+    addStatus("Opening session...");
+    try {
+      const res = await fetch("/api/open", { method: "POST" });
+      const data = (await res.json()) as DemoData & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? "open failed");
+      setDemo(data);
+
+      if (data.network === "base") {
+        addStatus(`Mainnet session ready — agent ${shortAddr(data.agent)}`);
+        setGranted(true);
+        return;
+      }
+
+      if (!data.sessionAddress) throw new Error("open did not return a session address");
+      addStatus(`Session keypair ready — ${shortAddr(data.sessionAddress)}`);
+      await requestGrant(data.sessionAddress as `0x${string}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPhase("idle");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Drive MetaMask to grant a real ERC-7715 erc20-token-periodic permission
+  // to the server's session account, then POST it to /api/grant.
+  async function requestGrant(sessionAddress: `0x${string}`) {
+    const ethereum = window.ethereum;
+    if (!ethereum) throw new Error("MetaMask not detected");
+    const acct = account ?? ((await ethereum.request({ method: "eth_requestAccounts" })) as string[])?.[0];
+    if (!acct) throw new Error("no MetaMask account connected");
+
+    addStatus("Requesting ERC-7715 permission (approve in MetaMask)...");
+    const { createWalletClient, custom, parseUnits } = await import("viem");
+    const { baseSepolia } = await import("viem/chains");
+    const { erc7715ProviderActions } = await import("@metamask/smart-accounts-kit/actions");
+
+    const walletClient = createWalletClient({
+      account: acct as `0x${string}`,
+      chain: baseSepolia,
+      transport: custom(ethereum),
+    }).extend(erc7715ProviderActions());
+
+    const now = Math.floor(Date.now() / 1000);
+    const grants = await walletClient.requestExecutionPermissions([
+      {
+        chainId: BASE_SEPOLIA_CHAIN_ID,
+        expiry: now + 7 * 24 * 60 * 60,
+        to: sessionAddress,
+        permission: {
+          type: "erc20-token-periodic",
+          data: {
+            tokenAddress: USDC_BASE_SEPOLIA as `0x${string}`,
+            periodAmount: parseUnits("0.3", 6),
+            periodDuration: 86400,
+            startTime: now,
+            justification: "sip402: let this agent spend up to 0.30 USDC/day",
+          },
+          isAdjustmentAllowed: true,
+        },
+      },
+    ]);
+
+    const grant = grants?.[0];
+    if (!grant || !grant.context) throw new Error("MetaMask returned no permission context");
+    addStatus(`Permission granted — context ${(grant.context.length - 2) / 2} bytes`);
+
+    const grantRes = await fetch("/api/grant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        context: grant.context,
+        from: grant.from,
+        delegationManager: grant.delegationManager,
+        dependencies: grant.dependencies,
+        chainId: BASE_SEPOLIA_CHAIN_ID,
+      }),
+    });
+    const grantData = (await grantRes.json()) as { ok?: boolean; error?: string };
+    if (!grantRes.ok || !grantData.ok) throw new Error(grantData.error ?? "failed to store grant");
+
+    setGranted(true);
+    addStatus("Permission stored — agent can now spend within the 0.30 USDC/day cap");
+  }
+
+  async function handleRun() {
+    if (!demo) return;
+    setError(null);
+    setBusy(true);
+    setPhase("running");
+    addStatus(netConfig.isMainnet ? "Starting mainnet Venice run..." : "Starting cascade...");
+    try {
+      const res = await fetch("/api/run", { method: "POST" });
+      if (!res.ok) {
+        const data = (await res.json()) as { error?: string };
+        throw new Error(data.error ?? "run failed");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPhase("done");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRevoke(agent: "writer" | "illustrator") {
+    addStatus(`Revoking ${agent}...`);
+    try {
+      const res = await fetch("/api/revoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent }),
+      });
+      const data = (await res.json()) as { ok?: boolean; txHash?: string; error?: string };
+      if (!res.ok) throw new Error(data.error ?? "revoke failed");
+      addStatus(`${agent} revoked — tx ${data.txHash ?? "unknown"}`);
+    } catch (err) {
+      addStatus(`revoke error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ── Derived ─────────────────────────────────────────────────────────────────
+
+  // Testnet cap = the real MetaMask grant (0.30 USDC/day), single agent.
+  const CAP_ATOMS = netConfig.isMainnet ? 150_000n : 300_000n;
+  const capLabel = netConfig.isMainnet ? "$0.15" : "$0.30";
+  const totalCapAtoms = netConfig.isMainnet ? 150_000n : 300_000n;
+  const totalCapLabel = netConfig.isMainnet ? "$0.15" : "$0.30";
+  const basescanTxUrl = (hash: string) => `${netConfig.basescanBase}/${hash}`;
+  const capPct = Math.min(100, (Number(totalDrawn) / Number(totalCapAtoms)) * 100);
+  const runLabel = netConfig.isMainnet ? "Run Venice" : "Run the agent";
+
+  // Guided wizard: 1 connect · 2 open/grant · 3 run · 4 spend/enforce
+  const wizardStep: 1 | 2 | 3 | 4 =
+    !netConfig.isMainnet && !connected
+      ? 1
+      : !granted
+      ? 2
+      : phase === "open"
+      ? 3
+      : 4;
+
+  const steps = netConfig.isMainnet
+    ? [
+        { k: "open", label: "Open session" },
+        { k: "run", label: "Run" },
+        { k: "enforce", label: "Enforce" },
+      ]
+    : [
+        { k: "connect", label: "Connect wallet" },
+        { k: "open", label: "Open tab" },
+        { k: "run", label: "Run" },
+        { k: "enforce", label: "Enforce" },
+      ];
+  const activeIndex = netConfig.isMainnet ? wizardStep - 2 : wizardStep - 1;
+  const activeKey = steps[Math.max(0, Math.min(activeIndex, steps.length - 1))]?.k;
+
+  // Action-card copy + button for the current step.
+  const action: { tag: string; line: string; button?: { label: string; onClick: () => void; disabled?: boolean } } =
+    activeKey === "connect"
+      ? {
+          tag: "Connect your wallet",
+          line: "Connect the MetaMask account you'll grant from. The demo switches it to Base Sepolia for you.",
+          button: { label: busy ? "Connecting…" : "Connect MetaMask", onClick: handleConnect, disabled: busy },
+        }
+      : activeKey === "open"
+      ? {
+          tag: netConfig.isMainnet ? "Open the session" : "Open a tab",
+          line: netConfig.isMainnet
+            ? "Open a mainnet session. The agent is funded server-side; press to begin metered Venice draws."
+            : "Approve ONE ERC-7715 Advanced Permission in MetaMask. It caps the agent at 0.30 USDC / day, enforced on-chain.",
+          button: {
+            label: busy ? "Waiting for MetaMask…" : netConfig.isMainnet ? "Open session" : "Open tab",
+            onClick: handleOpen,
+            disabled: busy,
+          },
+        }
+      : activeKey === "run"
+      ? {
+          tag: "Run the agent",
+          line: "Permission granted. The agent accumulates commitments and batch-redeems them on-chain, many commitments per transaction, until the cap.",
+          button: { label: busy ? "Starting…" : runLabel, onClick: handleRun, disabled: busy },
+        }
+      : phase === "running"
+      ? {
+          tag: "The chain is enforcing",
+          line: "Commitments are settling in batches, one tx per batch. When a batch crosses the 0.30 USDC cap it reverts atomically. Revoke below stops further draws.",
+        }
+      : {
+          tag: "Session complete",
+          line: "The chain held the cap: the over-cap batch reverted atomically. No custodian was ever asked to stop. Run again to replay.",
+          button: { label: "Run again", onClick: handleOpen, disabled: busy },
+        };
+
+  const showDelivery = phase === "running" || phase === "done";
+  const latest = receipts[0];
+
   return (
-    <main>
-      {/* ── HERO ─────────────────────────────────────────────────────────── */}
-      <section className="mx-auto max-w-6xl px-5 pb-24 pt-20 sm:px-8 sm:pb-32 sm:pt-28">
-        <div className="reveal" style={{ animationDelay: "0ms" }}>
-          <Kicker>x402 binding · batch-settlement · ERC-7710</Kicker>
-        </div>
-
-        <h1
-          className="reveal mt-6 max-w-4xl display-1 font-extrabold text-text"
-          style={{ animationDelay: "80ms" }}
-        >
-          Open a tab.
-          <br />
-          Pay <span className="text-amber">by the sip.</span>
-        </h1>
-
-        <p
-          className="reveal mt-8 prose-measure text-lg leading-relaxed text-text-dim"
-          style={{ animationDelay: "160ms" }}
-        >
-          One MetaMask permission opens a metered, revocable USDC session. An
-          agent sips against it as a paid AI stream is delivered. The chain
-          enforces the cap and the revoke. No custodian ever holds the funds.
+    <main className="mx-auto min-h-screen max-w-[1040px] px-5 py-10 sm:px-8">
+      {/* title */}
+      <div className="mb-8">
+        <span className="inline-flex items-center gap-2 font-bold text-[12px] uppercase tracking-[0.04em] text-ink-mute">
+          Live demo
+        </span>
+        <h1 className="mt-3 t-display-lg text-ink">Grant. Spend. Enforce.</h1>
+        <p className="mt-2 prose-measure text-[15px] leading-relaxed text-ink-secondary">
+          One MetaMask permission opens a metered USDC session. An agent sips
+          against it; the chain enforces the cap and your revoke. Follow the four
+          steps.
         </p>
+      </div>
 
-        <div
-          className="reveal mt-10 flex flex-wrap items-center gap-4"
-          style={{ animationDelay: "240ms" }}
-        >
-          <Link
-            href="/dashboard"
-            className="rounded-md border border-amber bg-amber px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-amber-deep"
-          >
-            Launch the demo
-          </Link>
-          <Link
-            href="/docs"
-            className="rounded-md border rule px-5 py-2.5 text-sm font-medium text-text transition-colors hover:bg-ink-2"
-          >
-            Read the docs
-          </Link>
-        </div>
-
-        {/* live-feel amber ticker motif (decorative, counts on the client) */}
-        <div
-          className="reveal mt-16 inline-flex items-baseline gap-3 border-t rule pt-6"
-          style={{ animationDelay: "320ms" }}
-        >
-          <span className="font-mono text-xs uppercase tracking-[0.2em] text-text-faint">
-            drawn this session
-          </span>
-          <HeroTicker />
-          <span className="font-mono text-xs text-text-faint">USDC</span>
-        </div>
-      </section>
-
-      {/* ── THE INSIGHT ──────────────────────────────────────────────────── */}
-      <section className="border-t rule">
-        <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
-          <SectionLabel>The one idea</SectionLabel>
-          <h2 className="max-w-3xl display-2 font-semibold text-text">
-            x402 prices the request.
-            <br />
-            sip402 prices the <span className="text-amber">delivery.</span>
-          </h2>
-
-          <div className="mt-12 overflow-hidden rounded-lg border rule">
-            <div className="grid grid-cols-[88px_1fr] items-center gap-4 border-b rule bg-ink-2 px-5 py-3 font-mono text-xs uppercase tracking-wider text-text-faint sm:grid-cols-[120px_1fr_220px]">
-              <span>scheme</span>
-              <span className="hidden sm:block">what it settles</span>
-              <span className="sm:text-right">the catch</span>
-            </div>
-            {[
-              {
-                k: "exact",
-                what: "one transfer, fixed amount, settled once",
-                catch: "no relationship",
-              },
-              {
-                k: "upto",
-                what: "settles once after delivery, up to a max",
-                catch: "trust the server's meter",
-              },
-              {
-                k: "sip402",
-                what: "a standing session, many small draws",
-                catch: "cap enforced on-chain",
-                amber: true,
-              },
-            ].map((r) => (
-              <div
-                key={r.k}
-                className="grid grid-cols-[88px_1fr] items-center gap-4 border-b border-line-soft px-5 py-4 last:border-0 sm:grid-cols-[120px_1fr_220px]"
-              >
+      {/* stepper */}
+      <ol className="mb-8 flex items-center gap-2 sm:gap-3">
+        {steps.map((s, i) => {
+          const done = i < activeIndex;
+          const active = i === activeIndex;
+          return (
+            <Fragment key={s.k}>
+              <li className="flex items-center gap-2.5">
                 <span
-                  className={`font-mono text-sm ${
-                    r.amber ? "font-medium text-amber" : "text-text-dim"
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-pill text-[13px] ${
+                    done
+                      ? "bg-primary text-on-primary"
+                      : active
+                      ? "border-2 border-primary bg-primary-subdued/30 text-primary"
+                      : "border border-hairline text-ink-mute"
                   }`}
                 >
-                  {r.k}
+                  {done ? "✓" : i + 1}
                 </span>
-                <span className="text-sm text-text-dim">{r.what}</span>
                 <span
-                  className={`font-mono text-xs sm:text-right ${
-                    r.amber ? "text-amber" : "text-text-faint"
+                  className={`hidden text-[14px] sm:inline ${
+                    active ? "text-ink" : done ? "text-ink-secondary" : "text-ink-mute"
                   }`}
                 >
-                  {r.catch}
+                  {s.label}
                 </span>
-              </div>
-            ))}
+              </li>
+              {i < steps.length - 1 && (
+                <li className={`h-px flex-1 ${done ? "bg-primary" : "bg-hairline"}`} aria-hidden />
+              )}
+            </Fragment>
+          );
+        })}
+      </ol>
+
+      {/* action card — the guided focus */}
+      <div className="mb-6 rounded-2xl border border-hairline bg-canvas p-6 shadow-e1 sm:p-7">
+        <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="t-heading-md text-ink">{action.tag}</p>
+            <p className="prose-measure mt-1.5 text-[15px] leading-relaxed text-ink-secondary">
+              {action.line}
+            </p>
+            {connected && account && (
+              <p className="mt-3 inline-flex items-center gap-2 rounded-pill bg-canvas-soft px-3 py-1 text-[12.5px] text-ink-mute">
+                <span className="h-1.5 w-1.5 rounded-pill bg-primary" />
+                <span className="font-mono">{shortAddr(account)}</span> · Base Sepolia
+              </p>
+            )}
           </div>
-        </div>
-      </section>
-
-      {/* ── HOW IT WORKS — Grant → Spend → Enforce ───────────────────────── */}
-      <section className="border-t rule">
-        <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
-          <SectionLabel>How it works</SectionLabel>
-          <h2 className="max-w-3xl display-2 font-semibold text-text">
-            Grant <span className="text-text-faint">→</span> Spend{" "}
-            <span className="text-text-faint">→</span> Enforce
-          </h2>
-
-          <div className="mt-12 grid gap-px overflow-hidden rounded-lg border rule sm:grid-cols-3">
-            {[
-              {
-                n: "01",
-                tag: "Grant",
-                line: "One MetaMask ERC-7715 Advanced Permission. A periodic USDC allowance, capped per period.",
-              },
-              {
-                n: "02",
-                tag: "Spend",
-                line: "The agent sips USDC per request. Each commitment is a redelegation to the seller; vouchers batch into one tx.",
-              },
-              {
-                n: "03",
-                tag: "Enforce",
-                line: "The ERC20PeriodTransferEnforcer reverts the over-cap draw. disableDelegation revokes mid-stream.",
-              },
-            ].map((s) => (
-              <div key={s.n} className="bg-ink-2 p-6 sm:p-8">
-                <span className="font-mono text-xs text-amber">{s.n}</span>
-                <h3 className="mt-3 text-lg font-medium text-text">{s.tag}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-text-dim">
-                  {s.line}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ── ON-CHAIN ENFORCEMENT, OFF-CHAIN DELIVERY ─────────────────────── */}
-      <section className="border-t rule">
-        <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
-          <SectionLabel>The premise</SectionLabel>
-          <h2 className="max-w-3xl display-3 font-semibold text-text">
-            Isn&apos;t it supposed to be fully on-chain?
-          </h2>
-          <div className="mt-8 grid gap-10 sm:grid-cols-2">
-            <div>
-              <p className="font-mono text-xs uppercase tracking-wider text-amber">
-                on-chain
-              </p>
-              <p className="mt-3 prose-measure text-text-dim">
-                Money, caps, and revocation. The{" "}
-                <span className="font-mono text-text">
-                  ERC20PeriodTransferEnforcer
-                </span>{" "}
-                reverts any draw past the cap.{" "}
-                <span className="font-mono text-text">disableDelegation</span>{" "}
-                cancels the session. The buyer&apos;s funds never leave their
-                account until redemption. No intermediary underwrites either
-                side.
-              </p>
-            </div>
-            <div>
-              <p className="font-mono text-xs uppercase tracking-wider text-text-faint">
-                off-chain
-              </p>
-              <p className="mt-3 prose-measure text-text-dim">
-                The resource server. HTTP and AI inference are off-chain by
-                necessity. sip402 binds the payment to the delivery without
-                asking you to trust the server with custody or with the meter.
-                The chain is the arbiter of value.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ── PROOF ────────────────────────────────────────────────────────── */}
-      <section className="border-t rule">
-        <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
-          <SectionLabel>Proven on-chain</SectionLabel>
-          <h2 className="max-w-3xl display-3 font-semibold text-text">
-            Every claim is a real transaction.
-          </h2>
-          <p className="mt-4 prose-measure text-text-dim">
-            Credibility comes from <span className="text-text">here is the tx</span>,
-            not from adjectives. Each row links to Basescan.
-          </p>
-
-          <div className="mt-10 grid gap-10 lg:grid-cols-2">
-            <div>
-              <p className="mb-4 font-mono text-xs uppercase tracking-wider text-text-faint">
-                Base Sepolia
-              </p>
-              <div className="rounded-lg border rule bg-ink px-5">
-                {testnetProof.map((p) => (
-                  <ProofRow key={p.label} {...p} />
-                ))}
-              </div>
-            </div>
-            <div>
-              <p className="mb-4 font-mono text-xs uppercase tracking-wider text-text-faint">
-                Base mainnet
-              </p>
-              <div className="rounded-lg border rule bg-ink px-5">
-                <ProofRow
-                  label="1Shot gasless redemption · gas paid in USDC"
-                  hash="0x26a4…40e9"
-                  href={`${MAINNET}/${MAINNET_1SHOT}`}
-                />
-                <ProofRow
-                  label="Real Venice inference · per-token draws"
-                  hash="0x2557…43e9"
-                  href={`${MAINNET}/${MAINNET_VENICE}`}
-                />
-              </div>
-              <p className="mt-4 prose-measure text-sm leading-relaxed text-text-faint">
-                Testnet uses direct redeemDelegations (no bundler). The 1Shot
-                relayer and Venice are mainnet, wired and runnable, exercised in
-                the live demo.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ── BUILT ON ─────────────────────────────────────────────────────── */}
-      <section className="border-t rule">
-        <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
-          <SectionLabel>Built on</SectionLabel>
-          <div className="grid gap-10 lg:grid-cols-[1fr_1fr]">
-            <div className="space-y-5">
-              {[
-                {
-                  k: "MetaMask Smart Accounts Kit",
-                  v: "ERC-7715 advanced permissions · ERC-7710 redelegation",
-                },
-                {
-                  k: "1Shot Permissionless Relayer",
-                  v: "EIP-7702 · gas paid in USDC · webhooks",
-                },
-                {
-                  k: "Venice AI",
-                  v: "x402-metered inference behind an OpenAI-compatible gateway",
-                },
-              ].map((s) => (
-                <div key={s.k} className="border-b border-line-soft pb-5 last:border-0">
-                  <p className="text-sm font-medium text-text">{s.k}</p>
-                  <p className="mt-1 font-mono text-xs text-text-faint">{s.v}</p>
-                </div>
-              ))}
-            </div>
-            <div>
-              <p className="mb-4 font-mono text-xs uppercase tracking-wider text-text-faint">
-                npm packages
-              </p>
-              <div className="rounded-lg border rule bg-ink px-5">
-                {[
-                  { k: "@sip402/core", v: "chain config · meter · settler" },
-                  { k: "@sip402/client", v: "openSession · createCommitment · revoke" },
-                  { k: "@sip402/server", v: "verify · accumulate · batch-redeem" },
-                  { k: "@sip402/splitter", v: "reference seller · streaming draws" },
-                ].map((p) => (
-                  <a
-                    key={p.k}
-                    href={`https://www.npmjs.com/package/${p.k}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="group flex items-center justify-between gap-4 border-b border-line-soft py-3 transition-colors last:border-0"
-                  >
-                    <span className="font-mono text-sm text-text-dim transition-colors group-hover:text-amber">
-                      {p.k}
-                    </span>
-                    <span className="hidden font-mono text-xs text-text-faint sm:block">
-                      {p.v}
-                    </span>
-                  </a>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-16 flex flex-wrap items-center gap-4">
-            <Link
-              href="/dashboard"
-              className="rounded-md border border-amber bg-amber px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-amber-deep"
+          {action.button && (
+            <button
+              onClick={action.button.onClick}
+              disabled={action.button.disabled}
+              className="shrink-0 rounded-pill bg-primary px-6 py-2.5 text-[15px] font-bold text-on-primary transition-colors hover:bg-primary-press disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-mute"
             >
-              Launch the demo
-            </Link>
-            <a
-              href="https://github.com/RomarioKavin1/sip402"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="rounded-md border rule px-5 py-2.5 text-sm font-medium text-text transition-colors hover:bg-ink-2"
-            >
-              View on GitHub ↗
-            </a>
-          </div>
+              {action.button.label}
+            </button>
+          )}
         </div>
-      </section>
 
-      {/* ── FOOTER ───────────────────────────────────────────────────────── */}
-      <footer className="border-t rule">
-        <div className="mx-auto flex max-w-6xl flex-col gap-4 px-5 py-10 sm:flex-row sm:items-center sm:justify-between sm:px-8">
+        {error && (
+          <div className="mt-5 rounded-xl border border-ruby/40 bg-ruby/10 p-3 text-[14px] text-ruby">
+            {error}
+          </div>
+        )}
+      </div>
+
+      {/* ticker */}
+      <div className="mb-6 rounded-2xl border border-hairline bg-canvas p-6 shadow-e1 sm:p-8">
+        <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="font-mono text-sm font-bold text-text">
-              sip<span className="text-amber">402</span>
+            <p className="text-[10px] font-bold uppercase tracking-[0.04em] text-ink-mute">
+              Total drawn · USDC
             </p>
-            <p className="mt-1 text-xs text-text-faint">
-              Session-Initiated Payments. Open a tab, pay by the sip.
-            </p>
+            <div
+              className={`tnum mt-2 text-6xl font-light sm:text-7xl ${
+                capRevert ? "revert-pulse text-ruby" : tickerGlow ? "draw-flash text-primary" : "text-ink"
+              }`}
+            >
+              <span className="text-ink-mute">$</span>
+              {atomsToUsd(totalDrawn)}
+            </div>
           </div>
-          <div className="flex flex-wrap gap-5 font-mono text-xs text-text-faint">
-            <Link href="/docs" className="transition-colors hover:text-text">
-              Docs
-            </Link>
-            <Link href="/dashboard" className="transition-colors hover:text-text">
-              Demo
-            </Link>
-            <a
-              href="https://github.com/RomarioKavin1/sip402"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="transition-colors hover:text-text"
-            >
-              GitHub ↗
-            </a>
-            <a
-              href="https://www.npmjs.com/package/@sip402/core"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="transition-colors hover:text-text"
-            >
-              npm ↗
-            </a>
+          <div className="text-left sm:text-right">
+            <p className="text-[10px] font-bold uppercase tracking-[0.04em] text-ink-mute">cap</p>
+            <p className="tnum mt-1 text-2xl font-light text-ink-secondary">{totalCapLabel}</p>
           </div>
         </div>
-      </footer>
+        <div className="mt-6">
+          <div className="h-1.5 w-full overflow-hidden rounded-pill bg-canvas-soft">
+            <div
+              className={`h-1.5 rounded-pill transition-all duration-500 ${capRevert ? "bg-ruby" : "bg-primary"}`}
+              style={{ width: `${capPct}%` }}
+            />
+          </div>
+          <div className="tnum mt-2 flex items-center justify-between text-[12px] text-ink-mute">
+            <span>{capPct.toFixed(0)}% of cap</span>
+            {latest ? (
+              latest.reverted ? (
+                <span className="text-ruby">batch reverted · cap reached on-chain</span>
+              ) : (
+                <span className="flex items-center gap-1.5">
+                  latest batch: {latest.count ?? 1} commitments → 1 tx
+                  {latest.txHash && (
+                    <a
+                      href={basescanTxUrl(latest.txHash)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary hover:underline"
+                    >
+                      ✓ {shortAddr(latest.txHash)} ↗
+                    </a>
+                  )}
+                </span>
+              )
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      {/* delivery — single agent lane; only while/after the agent runs */}
+      {showDelivery && (() => {
+        const a = netConfig.isMainnet ? researcher : writer;
+        const name = netConfig.isMainnet ? "researcher" : "agent";
+        const textRef = netConfig.isMainnet ? researcherTextRef : writerTextRef;
+        const pct = CAP_ATOMS > 0n ? Number((a.drawn * 100n) / CAP_ATOMS) : 0;
+        const revoked = !netConfig.isMainnet && writer.revoked;
+        return (
+          <div className="mb-6">
+            <h2 className="mb-3 text-[10px] font-bold uppercase tracking-[0.04em] text-ink-mute">
+              Delivery {netConfig.isMainnet ? "· real Venice inference" : "· simulated stream (testnet)"}
+            </h2>
+            <div
+              className={`rounded-2xl border bg-canvas p-5 shadow-e1 ${revoked ? "border-ruby/50" : "border-hairline"}`}
+            >
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h3 className="text-[15px] capitalize text-ink">{name}</h3>
+                  <div className="mt-1 flex items-center gap-2">
+                    <div className="h-1.5 w-28 overflow-hidden rounded-pill bg-canvas-soft">
+                      <div
+                        className={`h-1.5 rounded-pill transition-all duration-500 ${revoked ? "bg-ruby" : "bg-primary"}`}
+                        style={{ width: `${Math.min(100, pct)}%` }}
+                      />
+                    </div>
+                    <span className="tnum text-[12.5px] text-ink-mute">
+                      ${atomsToUsd(a.drawn)} / {capLabel}
+                    </span>
+                  </div>
+                </div>
+                {netConfig.isMainnet ? (
+                  <span className="rounded-pill border border-hairline px-2.5 py-0.5 font-mono text-[12px] text-ink-mute">
+                    llama-3.3-70b
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => handleRevoke("writer")}
+                    disabled={writer.revoked || phase !== "running"}
+                    className="rounded-pill border border-ruby/60 px-3 py-1.5 text-[13px] text-ruby transition-colors hover:bg-ruby/10 disabled:cursor-not-allowed disabled:border-hairline disabled:text-ink-mute"
+                  >
+                    {writer.revoked ? "Revoked" : "Revoke"}
+                  </button>
+                )}
+              </div>
+              <div
+                ref={textRef}
+                className="panel-scroll h-40 overflow-y-auto rounded-xl bg-navy p-3 font-mono text-[12.5px] leading-relaxed text-canvas/85"
+              >
+                {a.text || (
+                  <span className="text-ink-mute">
+                    {phase === "running"
+                      ? netConfig.isMainnet
+                        ? "Streaming Venice inference…"
+                        : "Streaming delivery…"
+                      : "No output yet"}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* details — hidden by default */}
+      <div className="mb-4">
+        <button
+          onClick={() => setShowDetails((v) => !v)}
+          className="flex items-center gap-1.5 text-[13px] text-ink-mute transition-colors hover:text-ink"
+        >
+          <span className={`inline-block transition-transform ${showDetails ? "rotate-90" : ""}`}>›</span>
+          {showDetails ? "Hide details" : "Show details"} · delegation tree, receipts, status log
+        </button>
+
+        {showDetails && (
+          <div className="mt-4 space-y-6">
+            {/* delegation tree */}
+            <section>
+              <h2 className="mb-3 text-[10px] font-bold uppercase tracking-[0.04em] text-ink-mute">
+                {netConfig.isMainnet ? "Session" : "Delegation tree"}
+              </h2>
+              <div className="rounded-2xl border border-hairline bg-canvas p-5 shadow-e1">
+                {netConfig.isMainnet ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3">
+                      <span className="text-[12px] text-primary">◆</span>
+                      <span className="text-[15px] text-ink">researcher</span>
+                      {demo && <span className="font-mono text-[12.5px] text-ink-mute">{shortAddr(demo.agent)}</span>}
+                      <span className="tnum ml-auto text-[13px] text-ink-secondary">
+                        ${atomsToUsd(researcher.drawn)} <span className="text-ink-mute">/ {capLabel}</span>
+                      </span>
+                    </div>
+                    <div className="font-mono text-[12.5px] text-ink-mute">
+                      Venice model: llama-3.3-70b · gasless 1Shot draws
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3">
+                      <span className="text-[12px] text-ink-mute">▣</span>
+                      <span className="text-[15px] text-ink">MetaMask grant</span>
+                      <span className="rounded-pill bg-primary-subdued/40 px-2 py-0.5 text-[11px] text-primary-deep">
+                        0.30 USDC / day
+                      </span>
+                      <span className="tnum ml-auto text-[13px] text-ink-secondary">
+                        ${atomsToUsd(totalDrawn)} <span className="text-ink-mute">/ {totalCapLabel}</span>
+                      </span>
+                    </div>
+                    <div className="ml-4 space-y-3 border-l border-hairline pl-4">
+                      <div className="flex items-center gap-3">
+                        <span className="text-[12px] text-primary">◈</span>
+                        <span className="text-[15px] text-ink">session key</span>
+                        <span className="text-[12.5px] text-ink-mute">delegate</span>
+                        {demo?.sessionAddress && (
+                          <span className="font-mono text-[12.5px] text-ink-mute">{shortAddr(demo.sessionAddress)}</span>
+                        )}
+                      </div>
+                      <div className="ml-4 space-y-3 border-l border-hairline pl-4">
+                        <div className="flex items-center gap-3">
+                          <span className={`text-[12px] ${writer.revoked ? "text-ruby" : "text-primary"}`}>◆</span>
+                          <span className={`text-[15px] ${writer.revoked ? "text-ruby line-through" : "text-ink"}`}>
+                            seller
+                          </span>
+                          <span className="text-[12.5px] text-ink-mute">redeemer</span>
+                          {demo?.sellerAddress && (
+                            <span className="font-mono text-[12.5px] text-ink-mute">{shortAddr(demo.sellerAddress)}</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <p className="pt-1 text-[12.5px] text-ink-mute">
+                      {(() => {
+                        const settled = receipts.filter((r) => !r.reverted && r.txHash);
+                        const commits = settled.reduce((n, r) => n + (r.count ?? 1), 0);
+                        return settled.length > 0
+                          ? `${commits} commitments settled across ${settled.length} batched tx${settled.length > 1 ? "s" : ""}.`
+                          : "Commitments batch-redeem here, many per transaction.";
+                      })()}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* receipt feed */}
+            <section>
+              <h2 className="mb-3 text-[10px] font-bold uppercase tracking-[0.04em] text-ink-mute">
+                Receipt feed
+              </h2>
+              <div className="rounded-2xl border border-hairline bg-canvas p-5 shadow-e1">
+                {receipts.length === 0 ? (
+                  <p className="text-[13px] text-ink-mute">No settlements yet</p>
+                ) : (
+                  <div className="panel-scroll max-h-56 space-y-1 overflow-y-auto">
+                    {receipts.map((r, i) => (
+                      <div
+                        key={i}
+                        className="tnum flex items-center gap-3 border-b border-hairline py-1.5 font-mono text-[12.5px] last:border-0"
+                      >
+                        <span className="shrink-0 text-ink-mute">{new Date(r.at).toLocaleTimeString()}</span>
+                        <span className="shrink-0 text-ink-secondary">
+                          {r.count != null ? "batch" : r.agent}
+                        </span>
+                        <span className="shrink-0 text-ink">${atomsToUsd(r.amountAtoms)}</span>
+                        {r.count != null && (
+                          <span className="shrink-0 text-ink-mute">×{r.count}</span>
+                        )}
+                        <span className="text-ink-mute">·</span>
+                        {r.reverted ? (
+                          <span className="text-ruby">batch reverted · cap reached on-chain</span>
+                        ) : r.txHash ? (
+                          <a
+                            href={basescanTxUrl(r.txHash)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-1 truncate text-primary underline-offset-2 transition-colors hover:underline"
+                          >
+                            <span>✓</span>
+                            {shortAddr(r.txHash)} ↗
+                          </a>
+                        ) : (
+                          <span className="text-ink-mute">pending</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* status log */}
+            <section>
+              <h2 className="mb-3 text-[10px] font-bold uppercase tracking-[0.04em] text-ink-mute">
+                Status
+              </h2>
+              <div className="rounded-2xl border border-hairline bg-canvas p-5 shadow-e1">
+                <div className="panel-scroll max-h-32 space-y-1 overflow-y-auto">
+                  {statusLog.length === 0 ? (
+                    <p className="font-mono text-[12.5px] text-ink-mute">Ready. Connect your wallet to start.</p>
+                  ) : (
+                    statusLog.map((s, idx) => (
+                      <p key={idx} className="font-mono text-[12.5px] text-ink-secondary">
+                        {s}
+                      </p>
+                    ))
+                  )}
+                </div>
+              </div>
+            </section>
+          </div>
+        )}
+      </div>
     </main>
   );
 }

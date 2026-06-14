@@ -1,7 +1,7 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { IS_MAINNET, toUsdcAtoms, createOneShotSettler, createDirectRedeemSettler, USDC, CHAIN_ID } from "@sip402/core";
+import { IS_MAINNET, toUsdcAtoms, createOneShotSettler, createDirectRedeemSettler, USDC } from "@sip402/core";
 import { veniceUpstream, localUpstream, tokenCostAtoms, StreamingDrawer, DryTabError } from "@sip402/splitter";
 import type { SettlementEvent } from "@sip402/server";
 import { state } from "../../../lib/state";
@@ -320,26 +320,12 @@ async function runTestnetGrant(): Promise<Response> {
   }
 
   const { privateKeyToAccount } = await import("viem/accounts");
-  const { createx402DelegationProvider } = await import("@metamask/smart-accounts-kit/experimental");
 
   const sessionAccount = privateKeyToAccount(state.sessionPrivateKey as `0x${string}`);
   const sellerAccount = privateKeyToAccount(state.sellerPrivateKey as `0x${string}`);
   const sellerAddress = state.sellerAddress as `0x${string}`;
   const parentContext = state.grantContext as `0x${string}`;
   const from = (state.grantFrom ?? undefined) as `0x${string}` | undefined;
-
-  // eip155 network string the provider expects (Base Sepolia = 84532).
-  const NETWORK = `eip155:${CHAIN_ID}`;
-
-  // The provider creates + signs the open redelegation per call. `from` and
-  // `parentPermissionContext` come from the MetaMask grant.
-  const provider = createx402DelegationProvider({
-    // The kit bundles its own viem Account types; structurally compatible.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    account: sessionAccount as any,
-    parentPermissionContext: parentContext,
-    ...(from ? { from } : {}),
-  });
 
   // The session account IS the delegate of the MetaMask-granted permission, so it
   // redeems the granted context directly (single hop, proven rail-proof pattern).
@@ -395,101 +381,121 @@ async function runTestnetGrant(): Promise<Response> {
     }
   }
 
-  // Per-draw size ~$0.05; localUpstream feeds the streamed text.
-  const DRAW_ATOMS = 50_000n; // $0.05
-  const MAX_DRAWS = 8; // hard stop so the demo can't loop forever (cap also enforced on-chain)
+  // Each metered request is a $0.04 COMMITMENT. The seller (here the session,
+  // which is the grant's delegate) ACCUMULATES commitments and redeems them in
+  // BATCHES — many commitments per redeemDelegations tx (the batch-settlement
+  // scheme). When a batch would push cumulative draws past the granted
+  // 0.30 USDC/day cap, the on-chain ERC20PeriodTransferEnforcer reverts the
+  // WHOLE batch atomically (the dry tab).
+  const COMMIT_ATOMS = 40_000n; // $0.04 per commitment
+  const BATCH_SIZE = 3; // commitments accumulated per on-chain batch
+  const MAX_BATCHES = 4; // safety stop (the cap is also enforced on-chain)
 
   pushEvent({ type: "tree_update", payload: { open: true } });
   pushEvent({
     type: "status",
     payload: {
-      msg: `Spending MetaMask-granted budget (session ${state.sessionAddress}) → seller ${sellerAddress}`,
+      msg: `Accumulating commitments (session ${state.sessionAddress}) → batch-redeem to seller ${sellerAddress}`,
     },
   });
 
   const up = localUpstream();
+  const pending: bigint[] = [];
   let accrued = 0n;
-  let drawCount = 0;
+  let batchCount = 0;
   let capped = false;
 
-  // Redeem one $0.05 batch against the granted budget.
-  async function drawOne(atoms: bigint): Promise<boolean> {
+  // Redeem ALL accumulated commitments in ONE redeemDelegations tx.
+  async function flushBatch(): Promise<boolean> {
+    if (pending.length === 0) return true;
+    const atomsList = pending.splice(0, pending.length);
+    const total = atomsList.reduce((a, b) => a + b, 0n);
     try {
       pushEvent({
         type: "status",
         agent: "writer",
-        payload: { msg: `Draw #${drawCount + 1}: redeeming $${(Number(atoms) / 1e6).toFixed(4)} from granted budget...` },
+        payload: {
+          msg: `Batch #${batchCount + 1}: redeeming ${atomsList.length} commitments ($${(Number(total) / 1e6).toFixed(2)}) in ONE tx...`,
+        },
       });
 
-      // The session is the grant's delegate — redeem the MetaMask-granted
-      // permission context directly, executing a USDC transfer to the seller
-      // drawn from the granting account within the granted periodic cap.
-      void provider; // (open-redelegation provider unused in the direct-redeem path)
-      const result = await settler.settle({
+      if (!settler.settleBatch) throw new Error("settler does not support batch settlement");
+      const result = await settler.settleBatch({
         signedDelegation: parentContext,
         payTo: sellerAddress,
-        atoms,
+        atomsList,
       });
 
-      drawCount++;
-      state.grantDrawn += atoms;
-      state.writerDrawn += atoms;
-      state.totalDrawn += atoms;
+      batchCount++;
+      state.grantDrawn += total;
+      state.writerDrawn += total;
+      state.totalDrawn += total;
 
       pushEvent({
         type: "settlement",
         agent: "writer",
         payload: {
-          amountAtoms: atoms.toString(),
+          amountAtoms: total.toString(),
           txHash: result.txHash,
-          commitmentIds: [],
+          count: result.count,
           at: Date.now(),
         },
       });
       pushEvent({
         type: "status",
         agent: "writer",
-        payload: { msg: `Draw #${drawCount} confirmed: ${result.txHash}` },
+        payload: { msg: `Batch #${batchCount} confirmed: ${result.count} commitments → ${result.txHash}` },
       });
       return true;
     } catch (err) {
-      // Cap reached (or any redemption revert) → dry-tab.
+      // The batch pushed cumulative draws past the on-chain cap → atomic revert.
       const msg = err instanceof Error ? err.message : String(err);
-      console.error("[drawOne] redemption failed:", err);
+      console.error("[flushBatch] batch redemption reverted:", err);
+      pushEvent({
+        type: "settlement",
+        agent: "writer",
+        payload: {
+          amountAtoms: "0",
+          attemptedAtoms: total.toString(),
+          count: atomsList.length,
+          reverted: true,
+          at: Date.now(),
+        },
+      });
       pushEvent({
         type: "status",
         agent: "writer",
-        payload: { msg: `writer tab dry — granted budget exhausted or redemption reverted: ${msg}` },
+        payload: { msg: `Batch #${batchCount + 1} reverted — cap reached on-chain (dry tab): ${msg}` },
       });
       return false;
     }
   }
 
   try {
-    const REPEATS = 30; // enough localUpstream text to accrue several $0.05 draws
-    for (let r = 0; r < REPEATS && !capped; r++) {
+    const REPEATS = 40; // enough localUpstream text to accrue several batches
+    outer: for (let r = 0; r < REPEATS && !capped; r++) {
       for await (const chunk of up.chatStream({ model: "local", messages: [] })) {
         pushEvent({ type: "agent_text", agent: "writer", payload: { text: chunk.text } });
         state.writerText += chunk.text;
-        // Demo retail price per delivered token (atoms). Tuned so the localUpstream
-        // text accrues ~$0.05 every ~2 passes → several visible draws within MAX_DRAWS.
         accrued += BigInt(chunk.tokens) * 55n;
 
-        while (!capped && accrued >= DRAW_ATOMS) {
-          accrued -= DRAW_ATOMS;
-          const ok = await drawOne(DRAW_ATOMS);
-          if (!ok) { capped = true; break; }
-          if (drawCount >= MAX_DRAWS) {
-            capped = true;
-            pushEvent({
-              type: "status",
-              agent: "writer",
-              payload: { msg: `Demo draw limit reached (${MAX_DRAWS} draws, $${(Number(state.grantDrawn) / 1e6).toFixed(4)} of granted budget spent)` },
-            });
-            break;
+        // Mint $0.04 commitments as delivery accrues; batch every BATCH_SIZE.
+        while (accrued >= COMMIT_ATOMS) {
+          accrued -= COMMIT_ATOMS;
+          pending.push(COMMIT_ATOMS);
+          if (pending.length >= BATCH_SIZE) {
+            const ok = await flushBatch();
+            if (!ok) { capped = true; break outer; }
+            if (batchCount >= MAX_BATCHES) { capped = true; break outer; }
           }
         }
       }
+    }
+
+    // Flush any trailing commitments as a final (smaller) batch.
+    if (!capped) {
+      const ok = await flushBatch();
+      if (!ok) capped = true;
     }
   } catch (err) {
     if (err instanceof DryTabError) {
@@ -509,10 +515,10 @@ async function runTestnetGrant(): Promise<Response> {
   pushEvent({
     type: "status",
     payload: {
-      msg: `Granted budget run complete — ${drawCount} draws, $${(Number(state.grantDrawn) / 1e6).toFixed(6)} USDC spent`,
+      msg: `Batch run complete — ${batchCount} batches, $${(Number(state.grantDrawn) / 1e6).toFixed(6)} USDC settled`,
     },
   });
   pushEvent({ type: "status", payload: { msg: "Cascade complete" } });
 
-  return NextResponse.json({ ok: true, draws: drawCount, drawnAtoms: state.grantDrawn.toString() });
+  return NextResponse.json({ ok: true, batches: batchCount, drawnAtoms: state.grantDrawn.toString() });
 }
