@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Meta commerce tokens (DESIGN.md) ────────────────────────────────────────
+   RGB channel triplets so Tailwind's `/opacity` modifier works.
+   Token NAMES are kept stable; values flip to the white commerce system.    */
+:root {
+  /* surface — stark white */
+  --canvas:          255 255 255;  /* #ffffff */
+  --canvas-soft:     240 242 245;  /* #f0f2f5  soft cloud */
+  --canvas-card:     255 255 255;
+  --canvas-mid:      228 230 235;  /* #e4e6eb  tracks */
+  --cream:           240 242 245;  /* alias → canvas-soft */
+  --navy:            10 20 23;      /* alias → ink-deep (dark promo/console) */
+  --hairline:        210 214 220;  /* #d2d6dc */
+  --hairline-input:  210 214 220;
+
+  /* text on white */
+  --ink:             10 20 23;      /* #0a1417 deep ink */
+  --ink-secondary:   59 66 72;      /* #3b4248 charcoal */
+  --ink-mute:        107 114 128;   /* #6b7280 steel */
+  --ink-mute-2:      107 114 128;
+  --body:            28 43 51;      /* #1c2b33 */
+  --body-mid:        107 114 128;
+
+  /* primary == cobalt (commerce/buy CTA only) */
+  --primary:         0 100 224;     /* #0064e0 */
+  --primary-deep:    1 67 181;      /* #0143b5 */
+  --primary-press:   1 67 181;
+  --primary-soft:    79 143 240;
+  --primary-subdued: 231 240 255;   /* #e7f0ff soft cobalt tint */
+  --on-primary:      255 255 255;
+
+  /* black marketing CTA */
+  --ink-button:      22 24 29;       /* #16181d */
+
+  /* semantic */
+  --success:         22 163 74;
+  --warning:         245 195 59;
+  --attention:       245 158 11;
+  --critical:        224 46 46;      /* errors + demo cap-revert / dry-tab */
+  --ruby:            224 46 46;       /* alias → critical (state signal) */
+
+  /* accents (rare) */
+  --accent-oculus:   124 58 237;
+  --accent-sunset:   245 158 11;
+  --accent-sunset-soft: 245 195 59;
+  --accent-dusk:     124 58 237;
+  --accent-twilight: 196 181 253;
+  --accent-breeze:   79 143 240;
+  --accent-midnight: 13 23 38;
+
+  /* elevation — flat marketing; subtle shadow is a commerce signal */
+  --shadow-1: 0 1px 4px rgba(20, 22, 26, 0.12);
+  --shadow-2: 0 6px 20px rgba(20, 22, 26, 0.12), 0 1px 4px rgba(20, 22, 26, 0.08);
+}
+
+html, body {
+  background: rgb(var(--canvas));
+  color: rgb(var(--ink));
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  line-height: 1.5;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+/* Tabular figures for money / numeric cells (the ticker, counters). */
+.tnum {
+  font-feature-settings: "tnum" 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* ── Display tier: Inter as Optimistic VF, weight 500 + ss01/ss02 ──────────── */
+.t-display-xxl { font-size: clamp(2.5rem,  1.6rem + 3.6vw, 4rem);    font-weight: 500; line-height: 1.15; letter-spacing: -0.01em;  font-feature-settings: "ss01","ss02"; }
+.t-display-xl  { font-size: clamp(2rem,    1.4rem + 2.6vw, 3rem);    font-weight: 500; line-height: 1.17; letter-spacing: -0.008em; font-feature-settings: "ss01","ss02"; }
+.t-display-lg  { font-size: clamp(1.75rem, 1.3rem + 1.8vw, 2.25rem); font-weight: 500; line-height: 1.25; letter-spacing: -0.005em; font-feature-settings: "ss01","ss02"; }
+.t-display-md  { font-size: clamp(1.5rem,  1.25rem + 1vw, 1.75rem);  font-weight: 500; line-height: 1.21; font-feature-settings: "ss01","ss02"; }
+.t-heading-lg  { font-size: 1.5rem;   font-weight: 500; line-height: 1.25; font-feature-settings: "ss01","ss02"; }
+.t-heading-md  { font-size: 1.125rem; font-weight: 700; line-height: 1.4; }
+
+.prose-measure { max-width: 68ch; }
+
+::selection { background: rgb(var(--primary) / 0.16); color: rgb(var(--ink)); }
+
+/* legacy gradient-mesh hook — neutralized */
+.mesh { background: none; }
+
+/* ── one tasteful staggered reveal ───────────────────────────────────────── */
+@keyframes sip-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.reveal {
+  opacity: 0;
+  animation: sip-rise 0.62s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal { animation: none; opacity: 1; }
+}
+
+/* ticker draw flash + cap-revert pulse (dashboard) */
+@keyframes draw-flash {
+  0%   { color: rgb(var(--primary)); }
+  100% { color: rgb(var(--ink)); }
+}
+.draw-flash { animation: draw-flash 0.6s ease-out 1; }
+@keyframes revert-pulse {
+  0%   { color: rgb(var(--critical)); transform: translateX(0); }
+  20%  { transform: translateX(-3px); }
+  40%  { transform: translateX(3px); }
+  60%  { transform: translateX(-2px); }
+  100% { color: rgb(var(--critical)); transform: translateX(0); }
+}
+.revert-pulse { animation: revert-pulse 0.55s ease-out 1; }
+
+/* thin scrollbars inside panels */
+.panel-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.panel-scroll::-webkit-scrollbar-thumb { background: rgb(var(--hairline)); border-radius: 3px; }
+.panel-scroll::-webkit-scrollbar-track { background: transparent; }
