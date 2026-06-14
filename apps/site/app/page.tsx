@@ -7,6 +7,7 @@ const MAINNET = "https://basescan.org/tx";
 const testnetProof: Array<{ label: string; hash: string; href: string }> = [
   { label: "Periodic delegation · cumulative draws", hash: "0xca04…b73b", href: `${SEPOLIA}/0xca047bebde0805b071a3b2eb7d245d61c56ec77550e03635434c6dc20dd8b73b` },
   { label: "Over-cap draw reverted on-chain (dry tab)", hash: "0xc478…2655", href: `${SEPOLIA}/0xc478ba71bbaecb66efe3f65866adc6e57675baad05246b3cb4ac9f9c020a2655` },
+  { label: "Live ERC-7715 grant → batched draws → cap revert", hash: "0x606e…31bf", href: `${SEPOLIA}/0x606e3f6eccd8b1b203ecd9f4c63d2e6ffee64d8e47b7880775277677414d31bf` },
   { label: "Commitment = redelegation · A2A depth-4 chain", hash: "0xcc1b…b153", href: `${SEPOLIA}/0xcc1ba35facadf92945c01b31da6a9574ceec36a27cddfd29bf36989e9356b153` },
   { label: "Batch redemption · 3 commitments in ONE tx", hash: "0x3b95…d9fa", href: `${SEPOLIA}/0x3b9583c3825612ef2a0bcc5ddbd75efc0ae73c3c897414700ec317a1bb41d9fa` },
   { label: "Streaming per-batch draws → dry-tab at $1.00", hash: "0x5ba8…a931c", href: `${SEPOLIA}/0x5ba8a54a8cd397cd6522d4dd70b4f690fa99fc7d30d11829bccd8711966a931c` },
@@ -285,8 +286,9 @@ export default function Home() {
                 <ProofRow label="Real Venice inference · per-token draws" hash="0x2557…43e9" href={`${MAINNET}/${MAINNET_VENICE}`} />
               </div>
               <p className="prose-measure mt-4 text-[14px] leading-relaxed text-ink-mute">
-                Testnet uses direct redeemDelegations (no bundler). The 1Shot relayer and Venice are mainnet,
-                wired and runnable, exercised in the live demo.
+                The counts differ on purpose: Sepolia is free, so every requirement is proven there; mainnet
+                runs spend real USDC, so the two production rails (gasless 1Shot redemption, paid Venice
+                inference) are each proven once on Base mainnet.
               </p>
             </div>
           </div>

@@ -10,6 +10,7 @@ export const metadata: Metadata = {
 const SEPOLIA = "https://sepolia.basescan.org/tx";
 const MAINNET = "https://basescan.org/tx";
 const MAINNET_1SHOT = "0x26a44ffedefb113e6a6c1aa266985076684dea9faaea097f92e4f3e1731940e9";
+const MAINNET_VENICE = "0x2557becd49e3611b92ae089eb00d867672fcba4b61e2abfcbb6b98c010bc43e9";
 
 const nav = [
   { id: "overview", label: "Overview" },
@@ -296,15 +297,21 @@ pnpm --filter @sip402/demo dev
           {/* PROOF */}
           <section>
             <H2 id="proof" eyebrow="Evidence">Proven on-chain</H2>
-            <P>Every claim is a real transaction. Each row links to Basescan.</P>
+            <P>
+              Every row is a real transaction. The counts differ on purpose: Base Sepolia is free, so every
+              requirement is proven there; mainnet runs spend real USDC and gas, so the two production rails
+              (gasless 1Shot redemption and paid Venice inference) are each proven once on Base mainnet.
+            </P>
             <div className="mt-6 overflow-hidden rounded-2xl border border-hairline-soft">
               {[
                 { label: "Periodic delegation · cumulative draws", href: `${SEPOLIA}/0xca047bebde0805b071a3b2eb7d245d61c56ec77550e03635434c6dc20dd8b73b`, net: "sepolia" },
                 { label: "Commitment = redelegation · A2A depth-4 chain", href: `${SEPOLIA}/0xcc1ba35facadf92945c01b31da6a9574ceec36a27cddfd29bf36989e9356b153`, net: "sepolia" },
                 { label: "Batch redemption · 3 commitments in ONE tx", href: `${SEPOLIA}/0x3b9583c3825612ef2a0bcc5ddbd75efc0ae73c3c897414700ec317a1bb41d9fa`, net: "sepolia" },
+                { label: "Live ERC-7715 grant → batched draws → cap revert", href: `${SEPOLIA}/0x606e3f6eccd8b1b203ecd9f4c63d2e6ffee64d8e47b7880775277677414d31bf`, net: "sepolia" },
                 { label: "Streaming per-batch draws → dry-tab at cap", href: `${SEPOLIA}/0x5ba8a54a8cd397cd6522d4dd70b4f690fa99fc7d30d11829bccd8711966a931c`, net: "sepolia" },
                 { label: "Revoke halts an agent mid-run", href: `${SEPOLIA}/0x9c2ccef0bceec5f82ca8d3ddf0d9a461b57b147ef9860285de874dcc1361a10f`, net: "sepolia" },
-                { label: "Mainnet 1Shot gasless redemption · real Venice", href: `${MAINNET}/${MAINNET_1SHOT}`, net: "mainnet" },
+                { label: "Mainnet · gasless 1Shot redemption (gas in USDC)", href: `${MAINNET}/${MAINNET_1SHOT}`, net: "mainnet" },
+                { label: "Mainnet · real Venice inference, metered per-token", href: `${MAINNET}/${MAINNET_VENICE}`, net: "mainnet" },
               ].map((p) => (
                 <a
                   key={p.label}

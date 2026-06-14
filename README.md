@@ -31,9 +31,11 @@ Delegation Manager  ── redeemDelegations (BATCH) ──▶  USDC: treasury �
 
 A buyer grants one periodic delegation. Each request, the buyer's agent signs a **redelegation to the seller** (the commitment). The seller verifies it by simulating the redemption, serves immediately, accumulates the voucher, and redeems a **batch** of vouchers in one transaction. The period caveat enforces the cap on-chain; revoking the root delegation makes the next draw revert.
 
-## Proven on Base Sepolia (real transactions)
+## Proven on-chain (real transactions)
 
-Every claim below is a real on-chain transaction (`packages/*/scripts/*-proof.ts`):
+The same binding runs on two networks, and the proof counts differ on purpose. **Base Sepolia is free, so every individual requirement is proven there** with its own transaction (`packages/*/scripts/*-proof.ts`). **Mainnet runs spend real USDC and gas, so the two production rails — gasless 1Shot redemption and paid Venice inference — are each proven once on Base mainnet.** Exhaustive coverage on testnet; the money rails confirmed on mainnet.
+
+### Base Sepolia — every requirement
 
 | Mechanism | Evidence |
 |---|---|
@@ -42,8 +44,16 @@ Every claim below is a real on-chain transaction (`packages/*/scripts/*-proof.ts
 | **Batch redemption — 3 commitments in ONE tx** | server-proof: [`0x3b95…`](https://sepolia.basescan.org/tx/0x3b9583c3825612ef2a0bcc5ddbd75efc0ae73c3c897414700ec317a1bb41d9fa) (3 transfers, 1 tx) |
 | **Streaming per-batch draws** (live ticker) → dry-tab at cap | splitter-proof: 4 draws [`0x5ba8…`](https://sepolia.basescan.org/tx/0x5ba8a54a8cd397cd6522d4dd70b4f690fa99fc7d30d11829bccd8711966a931c) → $1.00 → revert |
 | Demo: cascade → draws → **revoke halts an agent mid-run** | demo: revoke [`0x9c2c…`](https://sepolia.basescan.org/tx/0x9c2ccef0bceec5f82ca8d3ddf0d9a461b57b147ef9860285de874dcc1361a10f) |
+| **Live MetaMask ERC-7715 grant → batched draws → cap revert** | demo: batch [`0x606e…`](https://sepolia.basescan.org/tx/0x606e3f6eccd8b1b203ecd9f4c63d2e6ffee64d8e47b7880775277677414d31bf) (3 commitments, 1 tx); over-cap batch reverts |
 
-Verification on testnet uses direct `redeemDelegations` (no bundler). The 1Shot relayer and Venice are **Base mainnet only** — wired and runnable, exercised in the mainnet demo.
+### Base mainnet — the production rails
+
+| Mechanism | Evidence |
+|---|---|
+| **Gasless 1Shot redemption** — `redeemDelegations` relayed, gas paid in USDC (EIP-7702) | [`0x26a4…40e9`](https://basescan.org/tx/0x26a44ffedefb113e6a6c1aa266985076684dea9faaea097f92e4f3e1731940e9) |
+| **Real Venice inference, metered per-token** — paid draws against live AI | [`0x2557…43e9`](https://basescan.org/tx/0x2557becd49e3611b92ae089eb00d867672fcba4b61e2abfcbb6b98c010bc43e9) |
+
+Testnet uses direct `redeemDelegations` (no bundler); mainnet settles through the 1Shot relayer (gas in USDC, no ETH float).
 
 ## Packages
 
@@ -53,7 +63,8 @@ Verification on testnet uses direct `redeemDelegations` (no bundler). The 1Shot 
 | [`@sip402/client`](./packages/client) | Buyer: `openSession`, `redelegateSession` (A2A), `createCommitment` (redelegation-as-payment), `revokeSession`. |
 | [`@sip402/server`](./packages/server) | Seller: `verifyCommitment` (by simulation), `CommitmentAccumulator` (accept + batch-redeem), x402 HTTP middleware, SSE. |
 | [`@sip402/splitter`](./packages/splitter) | Reference seller reselling Venice behind an OpenAI-compatible gateway; `StreamingDrawer` (live per-batch draws). |
-| [`apps/demo`](./apps/demo) | Live dashboard: delegation tree, USDC ticker, receipt feed, revoke. |
+| [`apps/site`](./apps/site) | Marketing site (hero + docs) — fully static, no backend, deploy anywhere. |
+| [`apps/demo`](./apps/demo) | Local demo with backend: guided Connect → Open → Run → Enforce, a real MetaMask ERC-7715 grant, batched draws, and on-chain cap revert. See [its README](./apps/demo/README.md). |
 
 ## How it differs
 
@@ -76,11 +87,14 @@ pnpm -C packages/client    exec tsx scripts/binding-proof.ts
 pnpm -C packages/server    exec tsx scripts/server-proof.ts
 pnpm -C packages/splitter  splitter-proof
 
-# Live dashboard
-pnpm -C apps/demo dev      # http://localhost:3000
+# Marketing site (static — hero + docs)
+pnpm --filter @sip402/site dev    # http://localhost:3400
+
+# Local demo (backend: connect MetaMask, grant, batched draws, cap revert)
+pnpm --filter @sip402/demo dev    # http://localhost:3402 — see apps/demo/README.md
 ```
 
-`.env` (gitignored) needs `PRIVATE_KEY` (a Base Sepolia wallet funded with a little ETH + test USDC). Default network is `base-sepolia`; set `SIP_NETWORK=base` for mainnet.
+The demo needs `apps/demo/.env` (gitignored): copy `apps/demo/.env.example` and set `PRIVATE_KEY` (a throwaway Base Sepolia wallet funded with a little ETH + test USDC). Default network is `base-sepolia`; set `SIP_NETWORK=base` for mainnet. Full walkthrough in [`apps/demo/README.md`](./apps/demo/README.md).
 
 ## Stack
 
