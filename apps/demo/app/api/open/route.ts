@@ -1,28 +1,61 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { createPublicClient, createWalletClient, http, parseEther, type Hex } from "viem";
-import { baseSepolia } from "viem/chains";
-import { openSession } from "@sip402/client";
-import { DEFAULT_RPC_URL } from "@sip402/core";
+import { IS_MAINNET, DEFAULT_RPC_URL } from "@sip402/core";
 import { state, resetState } from "../../../lib/state";
 import { pushEvent } from "../../../lib/bus";
 
-function ownerPrivateKey(): Hex {
+function ownerPrivateKey(): string {
   const k = process.env.PRIVATE_KEY;
   if (!k) throw new Error("PRIVATE_KEY not set");
-  return k as Hex;
+  return k;
 }
 
 export async function POST() {
   try {
-    // Reset any prior run so UI starts fresh.
     resetState();
 
-    const ownerKey = ownerPrivateKey();
+    if (IS_MAINNET) {
+      // ── Mainnet: no treasury deploy needed. The funded EOA is the "agent".
+      // The run route will drive veniceUpstream + createOneShotSettler directly.
+      const { privateKeyToAccount } = await import("viem/accounts");
+      const ownerKey = ownerPrivateKey() as `0x${string}`;
+      const ownerAccount = privateKeyToAccount(ownerKey);
+      const agentAddress = ownerAccount.address;
+      const budgetUsd = 0.15; // ~5–6 draws @ $0.02 each
 
-    // 1. Open root session: treasury → orchestrator, cap $1 / 24h.
+      state.mainnetAgent = agentAddress;
+      state.mainnetBudgetUsd = budgetUsd;
+
+      pushEvent({
+        type: "status",
+        payload: {
+          msg: "Mainnet session ready",
+          network: "base",
+          agent: agentAddress,
+          budgetUsd,
+        },
+      });
+
+      return NextResponse.json({
+        network: "base",
+        agent: agentAddress,
+        budgetUsd,
+        // Provide empty treasury/sellerAddress so the UI's DemoData type still validates
+        treasury: agentAddress,
+        capUsd: budgetUsd,
+        sellerAddress: agentAddress,
+      });
+    }
+
+    // ── Testnet: full openSession deploy + fund seller EOA ──────────────────
+    const { generatePrivateKey, privateKeyToAccount } = await import("viem/accounts");
+    const { createPublicClient, createWalletClient, http, parseEther } = await import("viem");
+    const { baseSepolia } = await import("viem/chains");
+    const { openSession } = await import("@sip402/client");
+
+    const ownerKey = ownerPrivateKey() as `0x${string}`;
+
     const session = await openSession({
       ownerPrivateKey: ownerKey,
       capUsd: 1,
@@ -30,13 +63,11 @@ export async function POST() {
     });
     state.session = session;
 
-    // 2. Lazily generate + fund the seller EOA (needs ETH for redemption gas).
     const sellerKey = generatePrivateKey();
     const seller = privateKeyToAccount(sellerKey);
     state.sellerPrivateKey = sellerKey;
     state.sellerAddress = seller.address;
 
-    // Fund seller with ~0.02 ETH from owner so it can pay gas.
     const publicClient = createPublicClient({
       chain: baseSepolia,
       transport: http(DEFAULT_RPC_URL),
@@ -62,6 +93,7 @@ export async function POST() {
       type: "status",
       payload: {
         msg: "Session opened",
+        network: "base-sepolia",
         treasury: session.treasuryAddress,
         agent: session.agentAddress,
         capUsd: 1,
@@ -70,6 +102,7 @@ export async function POST() {
     });
 
     return NextResponse.json({
+      network: "base-sepolia",
       treasury: session.treasuryAddress,
       agent: session.agentAddress,
       capUsd: 1,

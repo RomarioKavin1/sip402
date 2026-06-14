@@ -15,6 +15,9 @@ export interface DemoState {
   illustratorText: string;
   writerRevoked: boolean;
   illustratorRevoked: boolean;
+  // Mainnet-specific: agent address (funded EOA) + budget
+  mainnetAgent: string | null;
+  mainnetBudgetUsd: number;
 }
 
 const g = globalThis as typeof globalThis & { __sip402Demo?: DemoState };
@@ -34,6 +37,8 @@ if (!g.__sip402Demo) {
     illustratorText: "",
     writerRevoked: false,
     illustratorRevoked: false,
+    mainnetAgent: null,
+    mainnetBudgetUsd: 0,
   };
 }
 
@@ -54,4 +59,6 @@ export function resetState() {
   s.illustratorText = "";
   s.writerRevoked = false;
   s.illustratorRevoked = false;
+  s.mainnetAgent = null;
+  s.mainnetBudgetUsd = 0;
 }

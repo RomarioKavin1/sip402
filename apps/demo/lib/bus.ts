@@ -1,6 +1,6 @@
 export interface BusEvent {
   type: "settlement" | "agent_text" | "status" | "tree_update";
-  agent?: "writer" | "illustrator";
+  agent?: "writer" | "illustrator" | "researcher";
   payload: unknown;
 }
 

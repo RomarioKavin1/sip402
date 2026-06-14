@@ -5,7 +5,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface SettlementEntry {
-  agent: "writer" | "illustrator";
+  agent: "writer" | "illustrator" | "researcher";
   amountAtoms: bigint;
   txHash?: string;
   at: number;
@@ -16,12 +16,20 @@ interface DemoData {
   agent: string;
   capUsd: number;
   sellerAddress: string;
+  network?: string;
+  budgetUsd?: number;
 }
 
 interface AgentState {
   drawn: bigint;
   text: string;
   revoked: boolean;
+}
+
+interface NetworkConfig {
+  isMainnet: boolean;
+  network: string;
+  basescanBase: string;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -44,17 +52,32 @@ export default function DemoPage() {
   const [totalDrawn, setTotalDrawn] = useState<bigint>(0n);
   const [writer, setWriter] = useState<AgentState>({ drawn: 0n, text: "", revoked: false });
   const [illustrator, setIllustrator] = useState<AgentState>({ drawn: 0n, text: "", revoked: false });
+  const [researcher, setResearcher] = useState<AgentState>({ drawn: 0n, text: "", revoked: false });
   const [statusLog, setStatusLog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [netConfig, setNetConfig] = useState<NetworkConfig>({
+    isMainnet: false,
+    network: "base-sepolia",
+    basescanBase: "https://sepolia.basescan.org/tx",
+  });
   const evtSourceRef = useRef<EventSource | null>(null);
   const writerTextRef = useRef<HTMLDivElement>(null);
   const illustratorTextRef = useRef<HTMLDivElement>(null);
+  const researcherTextRef = useRef<HTMLDivElement>(null);
 
   // Ticker animation
   const [tickerGlow, setTickerGlow] = useState(false);
 
   const addStatus = useCallback((msg: string) => {
     setStatusLog((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 50));
+  }, []);
+
+  // Fetch network config once on mount
+  useEffect(() => {
+    fetch("/api/config")
+      .then((r) => r.json())
+      .then((cfg) => setNetConfig(cfg as NetworkConfig))
+      .catch(() => {/* use default */});
   }, []);
 
   // ── SSE listener ──────────────────────────────────────────────────────────
@@ -69,7 +92,7 @@ export default function DemoPage() {
       try {
         const evt = JSON.parse(e.data) as {
           type: string;
-          agent?: "writer" | "illustrator";
+          agent?: "writer" | "illustrator" | "researcher";
           payload?: Record<string, unknown>;
         };
         if (evt.type === "ping") return;
@@ -89,8 +112,10 @@ export default function DemoPage() {
           setTimeout(() => setTickerGlow(false), 600);
           if (agent === "writer") {
             setWriter((prev) => ({ ...prev, drawn: prev.drawn + amountAtoms }));
-          } else {
+          } else if (agent === "illustrator") {
             setIllustrator((prev) => ({ ...prev, drawn: prev.drawn + amountAtoms }));
+          } else if (agent === "researcher") {
+            setResearcher((prev) => ({ ...prev, drawn: prev.drawn + amountAtoms }));
           }
         }
 
@@ -104,11 +129,18 @@ export default function DemoPage() {
                 writerTextRef.current.scrollTop = writerTextRef.current.scrollHeight;
               }
             });
-          } else {
+          } else if (agent === "illustrator") {
             setIllustrator((prev) => ({ ...prev, text: prev.text + text }));
             requestAnimationFrame(() => {
               if (illustratorTextRef.current) {
                 illustratorTextRef.current.scrollTop = illustratorTextRef.current.scrollHeight;
+              }
+            });
+          } else if (agent === "researcher") {
+            setResearcher((prev) => ({ ...prev, text: prev.text + text }));
+            requestAnimationFrame(() => {
+              if (researcherTextRef.current) {
+                researcherTextRef.current.scrollTop = researcherTextRef.current.scrollHeight;
               }
             });
           }
@@ -123,7 +155,7 @@ export default function DemoPage() {
           if (evt.agent && msg.includes("revoked")) {
             const agent = evt.agent;
             if (agent === "writer") setWriter((prev) => ({ ...prev, revoked: true }));
-            else setIllustrator((prev) => ({ ...prev, revoked: true }));
+            else if (agent === "illustrator") setIllustrator((prev) => ({ ...prev, revoked: true }));
           }
         }
       } catch { /* ignore parse errors */ }
@@ -144,13 +176,23 @@ export default function DemoPage() {
   async function handleOpen() {
     setError(null);
     setPhase("open");
+    // Reset agent state on new open
+    setWriter({ drawn: 0n, text: "", revoked: false });
+    setIllustrator({ drawn: 0n, text: "", revoked: false });
+    setResearcher({ drawn: 0n, text: "", revoked: false });
+    setReceipts([]);
+    setTotalDrawn(0n);
     addStatus("Opening session...");
     try {
       const res = await fetch("/api/open", { method: "POST" });
       const data = await res.json() as DemoData & { error?: string };
       if (!res.ok) throw new Error(data.error ?? "open failed");
       setDemo(data);
-      addStatus(`Session opened — treasury ${shortAddr(data.treasury)}`);
+      if (data.network === "base") {
+        addStatus(`Mainnet session ready — agent ${shortAddr(data.agent)}`);
+      } else {
+        addStatus(`Session opened — treasury ${shortAddr(data.treasury)}`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setPhase("idle");
@@ -161,7 +203,7 @@ export default function DemoPage() {
     if (!demo) return;
     setError(null);
     setPhase("running");
-    addStatus("Starting cascade...");
+    addStatus(netConfig.isMainnet ? "Starting mainnet Venice run..." : "Starting cascade...");
     try {
       const res = await fetch("/api/run", { method: "POST" });
       if (!res.ok) {
@@ -192,7 +234,17 @@ export default function DemoPage() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  const CAP_ATOMS = 400_000n; // $0.40 per agent
+  const CAP_ATOMS = netConfig.isMainnet ? 150_000n : 400_000n; // $0.15 mainnet / $0.40 testnet
+  const capLabel = netConfig.isMainnet ? "$0.15" : "$0.40";
+  const totalCapAtoms = netConfig.isMainnet ? 150_000n : 1_000_000n;
+  const totalCapLabel = netConfig.isMainnet ? "$0.15" : "$1.00";
+  const networkLabel = netConfig.isMainnet ? "Base mainnet" : "Base Sepolia";
+  const networkColor = netConfig.isMainnet ? "text-orange-400" : "text-indigo-400";
+  const networkBadgeBg = netConfig.isMainnet
+    ? "bg-orange-950 border-orange-700 text-orange-300"
+    : "bg-indigo-950 border-indigo-700 text-indigo-300";
+
+  const basescanTxUrl = (hash: string) => `${netConfig.basescanBase}/${hash}`;
 
   return (
     <main className="min-h-screen bg-[#0a0a0f] text-slate-200 p-6 max-w-6xl mx-auto">
@@ -200,11 +252,15 @@ export default function DemoPage() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-white">
-            sip402 <span className="text-indigo-400">demo</span>
+            sip402 <span className={networkColor}>demo</span>
           </h1>
-          <p className="text-xs text-slate-500 mt-0.5">batch-settlement · Base Sepolia · live draws</p>
+          <p className="text-xs text-slate-500 mt-0.5">batch-settlement · {networkLabel} · live draws</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex items-center gap-3">
+          {/* Network badge */}
+          <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${networkBadgeBg}`}>
+            {netConfig.isMainnet ? "Base mainnet" : "Base Sepolia"}
+          </span>
           <button
             onClick={handleOpen}
             disabled={phase !== "idle"}
@@ -217,7 +273,7 @@ export default function DemoPage() {
             disabled={phase !== "open" || !demo}
             className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition-colors"
           >
-            Run cascade
+            {netConfig.isMainnet ? "Run Venice" : "Run cascade"}
           </button>
         </div>
       </div>
@@ -231,61 +287,81 @@ export default function DemoPage() {
       {/* Top row: delegation tree + USDC ticker */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
 
-        {/* Delegation tree */}
+        {/* Delegation Tree / Session info */}
         <div className="rounded-xl bg-[#12121a] border border-slate-800 p-5">
           <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-4">
-            Delegation Tree
+            {netConfig.isMainnet ? "Session" : "Delegation Tree"}
           </h2>
-          <div className="space-y-3">
-            {/* Treasury */}
-            <div className="flex items-center gap-3">
-              <span className="text-slate-500 text-xs">▣</span>
-              <div>
-                <span className="text-slate-300 text-sm">treasury</span>
-                {demo && (
-                  <span className="ml-2 text-slate-600 text-xs font-mono">{shortAddr(demo.treasury)}</span>
-                )}
-              </div>
-              <div className="ml-auto">
-                <span className="text-xs font-mono text-emerald-400">
-                  ${atomsToUsd(totalDrawn)} <span className="text-slate-600">/ $1.00</span>
-                </span>
-              </div>
-            </div>
-            {/* Indent */}
-            <div className="ml-4 border-l border-slate-800 pl-4 space-y-3">
-              {/* Orchestrator */}
+          {netConfig.isMainnet ? (
+            /* Mainnet: simple agent address display */
+            <div className="space-y-3">
               <div className="flex items-center gap-3">
-                <span className="text-slate-500 text-xs">◈</span>
-                <span className="text-slate-300 text-sm">orchestrator</span>
-                {demo && (
-                  <span className="ml-2 text-slate-600 text-xs font-mono">{shortAddr(demo.agent)}</span>
-                )}
+                <span className="text-orange-500 text-xs">◆</span>
+                <div>
+                  <span className="text-slate-300 text-sm">researcher</span>
+                  {demo && (
+                    <span className="ml-2 text-slate-600 text-xs font-mono">{shortAddr(demo.agent)}</span>
+                  )}
+                </div>
                 <div className="ml-auto">
-                  <span className="text-xs font-mono text-emerald-400">cap $1.00</span>
+                  <span className="text-xs font-mono text-emerald-400">
+                    ${atomsToUsd(researcher.drawn)} <span className="text-slate-600">/ {capLabel}</span>
+                  </span>
                 </div>
               </div>
-              {/* Agents */}
-              <div className="ml-4 border-l border-slate-800 pl-4 space-y-3">
-                {(["writer", "illustrator"] as const).map((agent) => {
-                  const a = agent === "writer" ? writer : illustrator;
-                  return (
-                    <div key={agent} className="flex items-center gap-3">
-                      <span className={`text-xs ${a.revoked ? "text-red-500" : "text-slate-500"}`}>◆</span>
-                      <span className={`text-sm ${a.revoked ? "text-red-400 line-through" : "text-slate-300"}`}>
-                        {agent}
-                      </span>
-                      <div className="ml-auto text-right">
-                        <span className="text-xs font-mono text-emerald-400">
-                          ${atomsToUsd(a.drawn)} <span className="text-slate-600">/ $0.40</span>
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
+              <div className="mt-2 text-xs text-slate-600 font-mono">
+                Venice model: llama-3.3-70b · gasless 1Shot draws
               </div>
             </div>
-          </div>
+          ) : (
+            /* Testnet: full delegation tree */
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <span className="text-slate-500 text-xs">▣</span>
+                <div>
+                  <span className="text-slate-300 text-sm">treasury</span>
+                  {demo && (
+                    <span className="ml-2 text-slate-600 text-xs font-mono">{shortAddr(demo.treasury)}</span>
+                  )}
+                </div>
+                <div className="ml-auto">
+                  <span className="text-xs font-mono text-emerald-400">
+                    ${atomsToUsd(totalDrawn)} <span className="text-slate-600">/ {totalCapLabel}</span>
+                  </span>
+                </div>
+              </div>
+              <div className="ml-4 border-l border-slate-800 pl-4 space-y-3">
+                <div className="flex items-center gap-3">
+                  <span className="text-slate-500 text-xs">◈</span>
+                  <span className="text-slate-300 text-sm">orchestrator</span>
+                  {demo && (
+                    <span className="ml-2 text-slate-600 text-xs font-mono">{shortAddr(demo.agent)}</span>
+                  )}
+                  <div className="ml-auto">
+                    <span className="text-xs font-mono text-emerald-400">cap {totalCapLabel}</span>
+                  </div>
+                </div>
+                <div className="ml-4 border-l border-slate-800 pl-4 space-y-3">
+                  {(["writer", "illustrator"] as const).map((agent) => {
+                    const a = agent === "writer" ? writer : illustrator;
+                    return (
+                      <div key={agent} className="flex items-center gap-3">
+                        <span className={`text-xs ${a.revoked ? "text-red-500" : "text-slate-500"}`}>◆</span>
+                        <span className={`text-sm ${a.revoked ? "text-red-400 line-through" : "text-slate-300"}`}>
+                          {agent}
+                        </span>
+                        <div className="ml-auto text-right">
+                          <span className="text-xs font-mono text-emerald-400">
+                            ${atomsToUsd(a.drawn)} <span className="text-slate-600">/ {capLabel}</span>
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* USDC ticker */}
@@ -300,66 +376,106 @@ export default function DemoPage() {
           >
             ${atomsToUsd(totalDrawn)}
           </div>
-          <p className="text-xs text-slate-600 mt-2 font-mono">USDC · Base Sepolia</p>
+          <p className={`text-xs mt-2 font-mono ${netConfig.isMainnet ? "text-orange-500" : "text-slate-600"}`}>
+            USDC · {networkLabel}
+          </p>
           <div className="mt-4 w-full bg-slate-800 rounded-full h-1.5">
             <div
-              className="bg-emerald-500 h-1.5 rounded-full transition-all duration-500"
-              style={{ width: `${Math.min(100, (Number(totalDrawn) / 1_000_000) * 100)}%` }}
+              className={`h-1.5 rounded-full transition-all duration-500 ${netConfig.isMainnet ? "bg-orange-500" : "bg-emerald-500"}`}
+              style={{ width: `${Math.min(100, (Number(totalDrawn) / Number(totalCapAtoms)) * 100)}%` }}
             />
           </div>
-          <p className="text-xs text-slate-600 mt-1">of $1.00 cap</p>
+          <p className="text-xs text-slate-600 mt-1">of {totalCapLabel} cap</p>
         </div>
       </div>
 
       {/* Agent panels */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-        {(["writer", "illustrator"] as const).map((agent) => {
-          const a = agent === "writer" ? writer : illustrator;
-          const pct = CAP_ATOMS > 0n ? Number((a.drawn * 100n) / CAP_ATOMS) : 0;
-          return (
-            <div
-              key={agent}
-              className={`rounded-xl bg-[#12121a] border p-5 ${
-                a.revoked ? "border-red-900" : "border-slate-800"
-              }`}
-            >
-              <div className="flex items-center justify-between mb-3">
-                <div>
-                  <h3 className="text-sm font-medium text-slate-200 capitalize">{agent}</h3>
-                  <div className="mt-1 flex items-center gap-2">
-                    <div className="bg-slate-800 rounded-full h-1 w-32">
-                      <div
-                        className="bg-indigo-500 h-1 rounded-full transition-all duration-500"
-                        style={{ width: `${Math.min(100, pct)}%` }}
-                      />
-                    </div>
-                    <span className="text-xs font-mono text-slate-500">
-                      ${atomsToUsd(a.drawn)} / $0.40
-                    </span>
+      {netConfig.isMainnet ? (
+        /* Mainnet: single researcher panel */
+        <div className="mb-4">
+          <div className="rounded-xl bg-[#12121a] border border-orange-900/40 p-5">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="text-sm font-medium text-slate-200">researcher</h3>
+                <div className="mt-1 flex items-center gap-2">
+                  <div className="bg-slate-800 rounded-full h-1 w-32">
+                    <div
+                      className="bg-orange-500 h-1 rounded-full transition-all duration-500"
+                      style={{ width: `${Math.min(100, CAP_ATOMS > 0n ? Number((researcher.drawn * 100n) / CAP_ATOMS) : 0)}%` }}
+                    />
                   </div>
-                </div>
-                <button
-                  onClick={() => handleRevoke(agent)}
-                  disabled={a.revoked || phase === "idle" || phase === "open"}
-                  className="px-3 py-1.5 text-xs rounded-lg bg-red-900 hover:bg-red-800 disabled:opacity-40 disabled:cursor-not-allowed border border-red-700 text-red-300 transition-colors"
-                >
-                  {a.revoked ? "Revoked" : "Revoke"}
-                </button>
-              </div>
-              <div
-                ref={agent === "writer" ? writerTextRef : illustratorTextRef}
-                className="bg-[#0d0d14] rounded-lg p-3 h-32 overflow-y-auto text-xs text-slate-400 leading-relaxed font-mono"
-              >
-                {a.text || (
-                  <span className="text-slate-700">
-                    {phase === "running" ? "Waiting for tokens..." : "No output yet"}
+                  <span className="text-xs font-mono text-slate-500">
+                    ${atomsToUsd(researcher.drawn)} / {capLabel}
                   </span>
-                )}
+                </div>
               </div>
+              <span className="px-2 py-0.5 text-xs rounded bg-orange-950 border border-orange-800 text-orange-300">
+                llama-3.3-70b
+              </span>
             </div>
-          );
-        })}
-      </div>
+            <div
+              ref={researcherTextRef}
+              className="bg-[#0d0d14] rounded-lg p-3 h-40 overflow-y-auto text-xs text-slate-400 leading-relaxed font-mono"
+            >
+              {researcher.text || (
+                <span className="text-slate-700">
+                  {phase === "running" ? "Streaming Venice inference..." : "No output yet"}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* Testnet: two agent panels */
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          {(["writer", "illustrator"] as const).map((agent) => {
+            const a = agent === "writer" ? writer : illustrator;
+            const pct = CAP_ATOMS > 0n ? Number((a.drawn * 100n) / CAP_ATOMS) : 0;
+            return (
+              <div
+                key={agent}
+                className={`rounded-xl bg-[#12121a] border p-5 ${
+                  a.revoked ? "border-red-900" : "border-slate-800"
+                }`}
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h3 className="text-sm font-medium text-slate-200 capitalize">{agent}</h3>
+                    <div className="mt-1 flex items-center gap-2">
+                      <div className="bg-slate-800 rounded-full h-1 w-32">
+                        <div
+                          className="bg-indigo-500 h-1 rounded-full transition-all duration-500"
+                          style={{ width: `${Math.min(100, pct)}%` }}
+                        />
+                      </div>
+                      <span className="text-xs font-mono text-slate-500">
+                        ${atomsToUsd(a.drawn)} / {capLabel}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleRevoke(agent)}
+                    disabled={a.revoked || phase === "idle" || phase === "open"}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-red-900 hover:bg-red-800 disabled:opacity-40 disabled:cursor-not-allowed border border-red-700 text-red-300 transition-colors"
+                  >
+                    {a.revoked ? "Revoked" : "Revoke"}
+                  </button>
+                </div>
+                <div
+                  ref={agent === "writer" ? writerTextRef : illustratorTextRef}
+                  className="bg-[#0d0d14] rounded-lg p-3 h-32 overflow-y-auto text-xs text-slate-400 leading-relaxed font-mono"
+                >
+                  {a.text || (
+                    <span className="text-slate-700">
+                      {phase === "running" ? "Waiting for tokens..." : "No output yet"}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Receipt feed */}
       <div className="rounded-xl bg-[#12121a] border border-slate-800 p-5 mb-4">
@@ -382,7 +498,9 @@ export default function DemoPage() {
                   className={`px-1.5 py-0.5 rounded text-xs font-medium shrink-0 ${
                     r.agent === "writer"
                       ? "bg-indigo-950 text-indigo-300"
-                      : "bg-purple-950 text-purple-300"
+                      : r.agent === "illustrator"
+                      ? "bg-purple-950 text-purple-300"
+                      : "bg-orange-950 text-orange-300"
                   }`}
                 >
                   {r.agent}
@@ -391,7 +509,7 @@ export default function DemoPage() {
                 <span className="text-slate-600">·</span>
                 {r.txHash ? (
                   <a
-                    href={`https://sepolia.basescan.org/tx/${r.txHash}`}
+                    href={basescanTxUrl(r.txHash)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-indigo-400 hover:text-indigo-300 underline underline-offset-2 truncate"
@@ -416,8 +534,8 @@ export default function DemoPage() {
           {statusLog.length === 0 ? (
             <p className="text-slate-700 text-xs">Ready. Press Open tab to start.</p>
           ) : (
-            statusLog.map((s, i) => (
-              <p key={i} className="text-xs text-slate-500 font-mono">{s}</p>
+            statusLog.map((s, idx) => (
+              <p key={idx} className="text-xs text-slate-500 font-mono">{s}</p>
             ))
           )}
         </div>
