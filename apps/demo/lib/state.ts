@@ -18,6 +18,23 @@ export interface DemoState {
   // Mainnet-specific: agent address (funded EOA) + budget
   mainnetAgent: string | null;
   mainnetBudgetUsd: number;
+  // ── Testnet MetaMask ERC-7715 grant flow ──────────────────────────────────
+  /** Server-generated session keypair (the delegate the agent uses). */
+  sessionPrivateKey: Hex | null;
+  sessionAddress: string | null;
+  /** The MetaMask-granted ROOT permission context (the signed delegation chain). */
+  grantContext: Hex | null;
+  /** The granting smart account (delegator / root `from`) returned by the grant. */
+  grantFrom: string | null;
+  /** Delegation manager the grant must be redeemed through. */
+  grantDelegationManager: string | null;
+  /**
+   * Deploy dependencies for the granting smart account (if counterfactual).
+   * Each entry deploys a contract the granted chain depends on before first redeem.
+   */
+  grantDependencies: { factory: string; factoryData: string }[];
+  /** Total atoms drawn against the granted budget this run. */
+  grantDrawn: bigint;
 }
 
 const g = globalThis as typeof globalThis & { __sip402Demo?: DemoState };
@@ -39,6 +56,13 @@ if (!g.__sip402Demo) {
     illustratorRevoked: false,
     mainnetAgent: null,
     mainnetBudgetUsd: 0,
+    sessionPrivateKey: null,
+    sessionAddress: null,
+    grantContext: null,
+    grantFrom: null,
+    grantDelegationManager: null,
+    grantDependencies: [],
+    grantDrawn: 0n,
   };
 }
 
@@ -61,4 +85,11 @@ export function resetState() {
   s.illustratorRevoked = false;
   s.mainnetAgent = null;
   s.mainnetBudgetUsd = 0;
+  s.sessionPrivateKey = null;
+  s.sessionAddress = null;
+  s.grantContext = null;
+  s.grantFrom = null;
+  s.grantDelegationManager = null;
+  s.grantDependencies = [];
+  s.grantDrawn = 0n;
 }

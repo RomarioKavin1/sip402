@@ -18,6 +18,23 @@ interface DemoData {
   sellerAddress: string;
   network?: string;
   budgetUsd?: number;
+  // Testnet MetaMask grant flow
+  sessionAddress?: string;
+}
+
+// Base Sepolia
+const BASE_SEPOLIA_CHAIN_ID = 84532;
+const BASE_SEPOLIA_HEX = "0x14a34";
+const USDC_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+
+// Minimal EIP-1193 provider shape (window.ethereum).
+interface Eip1193Provider {
+  request: (args: { method: string; params?: unknown[] | object }) => Promise<unknown>;
+}
+declare global {
+  interface Window {
+    ethereum?: Eip1193Provider;
+  }
 }
 
 interface AgentState {
@@ -55,6 +72,7 @@ export default function DemoPage() {
   const [researcher, setResearcher] = useState<AgentState>({ drawn: 0n, text: "", revoked: false });
   const [statusLog, setStatusLog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [granted, setGranted] = useState(false);
   const [netConfig, setNetConfig] = useState<NetworkConfig>({
     isMainnet: false,
     network: "base-sepolia",
@@ -176,6 +194,7 @@ export default function DemoPage() {
   async function handleOpen() {
     setError(null);
     setPhase("open");
+    setGranted(false);
     // Reset agent state on new open
     setWriter({ drawn: 0n, text: "", revoked: false });
     setIllustrator({ drawn: 0n, text: "", revoked: false });
@@ -188,15 +207,126 @@ export default function DemoPage() {
       const data = await res.json() as DemoData & { error?: string };
       if (!res.ok) throw new Error(data.error ?? "open failed");
       setDemo(data);
+
       if (data.network === "base") {
+        // ── Mainnet: server-side agent, no wallet popup ──
         addStatus(`Mainnet session ready — agent ${shortAddr(data.agent)}`);
-      } else {
-        addStatus(`Session opened — treasury ${shortAddr(data.treasury)}`);
+        setGranted(true); // mainnet needs no grant; enable Run
+        return;
       }
+
+      // ── Testnet: drive MetaMask for a real ERC-7715 permission grant ──
+      if (!data.sessionAddress) throw new Error("open did not return a session address");
+      addStatus(`Session keypair ready — session ${shortAddr(data.sessionAddress)}`);
+      await requestMetaMaskGrant(data.sessionAddress as `0x${string}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setPhase("idle");
     }
+  }
+
+  // Drive MetaMask to grant a real ERC-7715 erc20-token-periodic permission
+  // (2 USDC/day) to the server's session account, then POST it to /api/grant.
+  async function requestMetaMaskGrant(sessionAddress: `0x${string}`) {
+    if (typeof window === "undefined" || !window.ethereum) {
+      throw new Error("MetaMask not detected — install MetaMask to grant the permission");
+    }
+    const ethereum = window.ethereum;
+
+    // 1. Connect.
+    addStatus("Connecting MetaMask...");
+    const accounts = (await ethereum.request({ method: "eth_requestAccounts" })) as string[];
+    const account = accounts?.[0];
+    if (!account) throw new Error("no MetaMask account connected");
+    addStatus(`Connected ${shortAddr(account)}`);
+
+    // 2. Ensure Base Sepolia (84532).
+    const currentChain = (await ethereum.request({ method: "eth_chainId" })) as string;
+    if (currentChain?.toLowerCase() !== BASE_SEPOLIA_HEX) {
+      addStatus("Switching MetaMask to Base Sepolia...");
+      try {
+        await ethereum.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: BASE_SEPOLIA_HEX }],
+        });
+      } catch (switchErr) {
+        const code = (switchErr as { code?: number })?.code;
+        if (code === 4902) {
+          await ethereum.request({
+            method: "wallet_addEthereumChain",
+            params: [
+              {
+                chainId: BASE_SEPOLIA_HEX,
+                chainName: "Base Sepolia",
+                nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+                rpcUrls: ["https://sepolia.base.org"],
+                blockExplorerUrls: ["https://sepolia.basescan.org"],
+              },
+            ],
+          });
+        } else {
+          throw switchErr;
+        }
+      }
+    }
+
+    // 3. Build a wallet client with the ERC-7715 provider actions and request the grant.
+    addStatus("Requesting ERC-7715 permission (approve in MetaMask)...");
+    const { createWalletClient, custom, parseUnits } = await import("viem");
+    const { baseSepolia } = await import("viem/chains");
+    const { erc7715ProviderActions } = await import("@metamask/smart-accounts-kit/actions");
+
+    const walletClient = createWalletClient({
+      account: account as `0x${string}`,
+      chain: baseSepolia,
+      transport: custom(ethereum),
+    }).extend(erc7715ProviderActions());
+
+    const now = Math.floor(Date.now() / 1000);
+    const grants = await walletClient.requestExecutionPermissions([
+      {
+        chainId: BASE_SEPOLIA_CHAIN_ID,
+        expiry: now + 7 * 24 * 60 * 60, // 7 days
+        to: sessionAddress,
+        permission: {
+          type: "erc20-token-periodic",
+          data: {
+            tokenAddress: USDC_BASE_SEPOLIA as `0x${string}`,
+            periodAmount: parseUnits("2", 6), // 2 USDC
+            periodDuration: 86400, // per day
+            startTime: now,
+            justification: "sip402: let this agent spend up to 2 USDC/day",
+          },
+          isAdjustmentAllowed: true,
+        },
+      },
+    ]);
+
+    const grant = grants?.[0];
+    if (!grant || !grant.context) {
+      throw new Error("MetaMask returned no permission context");
+    }
+    addStatus(`Permission granted — context ${(grant.context.length - 2) / 2} bytes`);
+
+    // 4. Persist the granted context server-side as the session ROOT.
+    const grantRes = await fetch("/api/grant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        context: grant.context,
+        from: grant.from,
+        delegationManager: grant.delegationManager,
+        dependencies: grant.dependencies,
+        chainId: BASE_SEPOLIA_CHAIN_ID,
+      }),
+    });
+    const grantData = (await grantRes.json()) as { ok?: boolean; error?: string };
+    if (!grantRes.ok || !grantData.ok) {
+      throw new Error(grantData.error ?? "failed to store grant");
+    }
+
+    setGranted(true);
+    addStatus("Permission stored — agent can now spend within the 2 USDC/day cap");
   }
 
   async function handleRun() {
@@ -270,7 +400,7 @@ export default function DemoPage() {
           </button>
           <button
             onClick={handleRun}
-            disabled={phase !== "open" || !demo}
+            disabled={phase !== "open" || !demo || !granted}
             className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition-colors"
           >
             {netConfig.isMainnet ? "Run Venice" : "Run cascade"}
@@ -282,6 +412,27 @@ export default function DemoPage() {
         <div className="mb-6 p-3 rounded-lg bg-red-950 border border-red-800 text-red-300 text-sm">
           {error}
         </div>
+      )}
+
+      {/* MetaMask ERC-7715 grant status (testnet only) */}
+      {!netConfig.isMainnet && demo && phase !== "idle" && (
+        granted ? (
+          <div className="mb-6 p-3 rounded-lg bg-emerald-950 border border-emerald-800 text-emerald-300 text-sm flex items-center gap-2">
+            <span>✅</span>
+            <span>
+              Permission granted via MetaMask — agent may spend up to{" "}
+              <span className="font-mono font-semibold">2 USDC / day</span>
+              {demo.sessionAddress && (
+                <> · session <span className="font-mono">{shortAddr(demo.sessionAddress)}</span></>
+              )}
+            </span>
+          </div>
+        ) : (
+          <div className="mb-6 p-3 rounded-lg bg-amber-950 border border-amber-800 text-amber-300 text-sm flex items-center gap-2">
+            <span>⏳</span>
+            <span>Approve the ERC-7715 Advanced Permission in the MetaMask popup to enable the run.</span>
+          </div>
+        )
       )}
 
       {/* Top row: delegation tree + USDC ticker */}

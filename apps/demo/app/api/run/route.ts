@@ -1,7 +1,7 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { IS_MAINNET, toUsdcAtoms, createOneShotSettler } from "@sip402/core";
+import { IS_MAINNET, toUsdcAtoms, createOneShotSettler, createDirectRedeemSettler, USDC, CHAIN_ID } from "@sip402/core";
 import { veniceUpstream, localUpstream, tokenCostAtoms, StreamingDrawer, DryTabError } from "@sip402/splitter";
 import type { SettlementEvent } from "@sip402/server";
 import { state } from "../../../lib/state";
@@ -16,7 +16,11 @@ export async function POST() {
   try {
     if (IS_MAINNET) {
       return await runMainnet();
+    } else if (state.grantContext) {
+      // Testnet with a real MetaMask ERC-7715 grant: spend the granted budget.
+      return await runTestnetGrant();
     } else {
+      // Testnet legacy path (no wallet): programmatic openSession.
       return await runTestnet();
     }
   } finally {
@@ -288,4 +292,215 @@ async function runTestnet(): Promise<Response> {
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: msg }, { status: 500 });
   }
+}
+
+// ── TESTNET (MetaMask grant): spend the granted ERC-7715 budget ───────────────
+//
+// The buyer granted a real erc20-token-periodic permission in MetaMask
+// (2 USDC/day) `to` the server-generated SESSION account. For each metered
+// batch we:
+//   1. Build an OPEN REDELEGATION session → seller from the granted context using
+//      the kit's createx402DelegationProvider (signed by the session account).
+//      It returns a fully-encoded `permissionContext` (the open redelegation
+//      prepended onto the granted chain) plus the delegationManager + delegator.
+//   2. Have the SELLER (a gas-funded EOA) redeem that permissionContext via the
+//      proven createDirectRedeemSettler → redeemDelegations flow, executing a
+//      USDC transfer of `atoms` to the seller. The transfer draws against the
+//      MetaMask-granted budget — a real Base Sepolia tx.
+//
+// When cumulative draws exceed the granted 2-USDC/day cap, the on-chain
+// ERC20PeriodTransferEnforcer reverts the redemption → dry-tab demo. We surface
+// that revert as a halt for the "writer" agent panel (same UX as the legacy path).
+async function runTestnetGrant(): Promise<Response> {
+  if (!state.grantContext || !state.sessionPrivateKey || !state.sellerPrivateKey || !state.sellerAddress) {
+    return NextResponse.json(
+      { error: "no MetaMask grant — open the tab and approve the permission first" },
+      { status: 400 },
+    );
+  }
+
+  const { privateKeyToAccount } = await import("viem/accounts");
+  const { createx402DelegationProvider } = await import("@metamask/smart-accounts-kit/experimental");
+
+  const sessionAccount = privateKeyToAccount(state.sessionPrivateKey as `0x${string}`);
+  const sellerAccount = privateKeyToAccount(state.sellerPrivateKey as `0x${string}`);
+  const sellerAddress = state.sellerAddress as `0x${string}`;
+  const parentContext = state.grantContext as `0x${string}`;
+  const from = (state.grantFrom ?? undefined) as `0x${string}` | undefined;
+
+  // eip155 network string the provider expects (Base Sepolia = 84532).
+  const NETWORK = `eip155:${CHAIN_ID}`;
+
+  // The provider creates + signs the open redelegation per call. `from` and
+  // `parentPermissionContext` come from the MetaMask grant.
+  const provider = createx402DelegationProvider({
+    // The kit bundles its own viem Account types; structurally compatible.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    account: sessionAccount as any,
+    parentPermissionContext: parentContext,
+    ...(from ? { from } : {}),
+  });
+
+  // The seller redeems the open redelegation on-chain (pays gas, receives USDC).
+  const settler = createDirectRedeemSettler({ delegateAccount: sellerAccount });
+
+  // If the granting smart account is counterfactual (not yet deployed), the
+  // granted chain's `dependencies` deploy it. Land them once, from the seller,
+  // before the first redeem — otherwise the first redemption reverts ("no code").
+  if (state.grantDependencies.length > 0 && from) {
+    const { createPublicClient, createWalletClient, http } = await import("viem");
+    const { baseSepolia } = await import("viem/chains");
+    const { DEFAULT_RPC_URL } = await import("@sip402/core");
+    const publicClient = createPublicClient({ chain: baseSepolia, transport: http(DEFAULT_RPC_URL) });
+    const code = await publicClient.getCode({ address: from });
+    if (!code || code === "0x") {
+      const sellerWallet = createWalletClient({
+        account: sellerAccount,
+        chain: baseSepolia,
+        transport: http(DEFAULT_RPC_URL),
+      });
+      pushEvent({
+        type: "status",
+        payload: { msg: `Deploying granting smart account ${from} (counterfactual) before first redeem...` },
+      });
+      for (const dep of state.grantDependencies) {
+        try {
+          const hash = await sellerWallet.sendTransaction({
+            to: dep.factory as `0x${string}`,
+            data: dep.factoryData as `0x${string}`,
+          });
+          await publicClient.waitForTransactionReceipt({ hash });
+          pushEvent({ type: "status", payload: { msg: `Dependency deployed: ${hash}` } });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          pushEvent({ type: "status", payload: { msg: `Dependency deploy failed (continuing): ${msg}` } });
+        }
+      }
+    }
+  }
+
+  // Per-draw size ~$0.05; localUpstream feeds the streamed text.
+  const DRAW_ATOMS = 50_000n; // $0.05
+  const MAX_DRAWS = 8; // hard stop so the demo can't loop forever (cap also enforced on-chain)
+
+  pushEvent({ type: "tree_update", payload: { open: true } });
+  pushEvent({
+    type: "status",
+    payload: {
+      msg: `Spending MetaMask-granted budget (session ${state.sessionAddress}) → seller ${sellerAddress}`,
+    },
+  });
+
+  const up = localUpstream();
+  let accrued = 0n;
+  let drawCount = 0;
+  let capped = false;
+
+  // Redeem one $0.05 batch against the granted budget.
+  async function drawOne(atoms: bigint): Promise<boolean> {
+    try {
+      pushEvent({
+        type: "status",
+        agent: "writer",
+        payload: { msg: `Draw #${drawCount + 1}: redeeming $${(Number(atoms) / 1e6).toFixed(4)} from granted budget...` },
+      });
+
+      // 1. Build + sign the open redelegation session → seller for this amount.
+      const payload = await provider({
+        scheme: "exact",
+        network: NETWORK,
+        asset: USDC,
+        amount: atoms.toString(),
+        payTo: sellerAddress,
+        maxTimeoutSeconds: 60,
+      });
+
+      // 2. Seller redeems the returned permissionContext on-chain.
+      const result = await settler.settle({
+        signedDelegation: payload.permissionContext,
+        payTo: sellerAddress,
+        atoms,
+      });
+
+      drawCount++;
+      state.grantDrawn += atoms;
+      state.writerDrawn += atoms;
+      state.totalDrawn += atoms;
+
+      pushEvent({
+        type: "settlement",
+        agent: "writer",
+        payload: {
+          amountAtoms: atoms.toString(),
+          txHash: result.txHash,
+          commitmentIds: [],
+          at: Date.now(),
+        },
+      });
+      pushEvent({
+        type: "status",
+        agent: "writer",
+        payload: { msg: `Draw #${drawCount} confirmed: ${result.txHash}` },
+      });
+      return true;
+    } catch (err) {
+      // Cap reached (or any redemption revert) → dry-tab.
+      const msg = err instanceof Error ? err.message : String(err);
+      pushEvent({
+        type: "status",
+        agent: "writer",
+        payload: { msg: `writer tab dry — granted budget exhausted or redemption reverted: ${msg}` },
+      });
+      return false;
+    }
+  }
+
+  try {
+    const REPEATS = 30; // enough localUpstream text to accrue several $0.05 draws
+    for (let r = 0; r < REPEATS && !capped; r++) {
+      for await (const chunk of up.chatStream({ model: "local", messages: [] })) {
+        pushEvent({ type: "agent_text", agent: "writer", payload: { text: chunk.text } });
+        state.writerText += chunk.text;
+        accrued += tokenCostAtoms(chunk.tokens);
+
+        while (!capped && accrued >= DRAW_ATOMS) {
+          accrued -= DRAW_ATOMS;
+          const ok = await drawOne(DRAW_ATOMS);
+          if (!ok) { capped = true; break; }
+          if (drawCount >= MAX_DRAWS) {
+            capped = true;
+            pushEvent({
+              type: "status",
+              agent: "writer",
+              payload: { msg: `Demo draw limit reached (${MAX_DRAWS} draws, $${(Number(state.grantDrawn) / 1e6).toFixed(4)} of granted budget spent)` },
+            });
+            break;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    if (err instanceof DryTabError) {
+      pushEvent({
+        type: "status",
+        agent: "writer",
+        payload: { msg: "writer tab dry — halted", txHash: (err as DryTabError).txHash },
+      });
+    } else {
+      const msg = err instanceof Error ? err.message : String(err);
+      pushEvent({ type: "status", payload: { msg: `Grant run error: ${msg}` } });
+      pushEvent({ type: "status", payload: { msg: "Cascade complete" } });
+      return NextResponse.json({ error: msg }, { status: 500 });
+    }
+  }
+
+  pushEvent({
+    type: "status",
+    payload: {
+      msg: `Granted budget run complete — ${drawCount} draws, $${(Number(state.grantDrawn) / 1e6).toFixed(6)} USDC spent`,
+    },
+  });
+  pushEvent({ type: "status", payload: { msg: "Cascade complete" } });
+
+  return NextResponse.json({ ok: true, draws: drawCount, drawnAtoms: state.grantDrawn.toString() });
 }

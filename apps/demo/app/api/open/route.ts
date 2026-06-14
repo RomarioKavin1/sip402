@@ -48,21 +48,28 @@ export async function POST() {
       });
     }
 
-    // ── Testnet: full openSession deploy + fund seller EOA ──────────────────
+    // ── Testnet: MetaMask ERC-7715 grant flow ───────────────────────────────
+    // We generate a fresh SESSION keypair (the delegate the agent will use to
+    // sign the open redelegation that the seller redeems). The session PRIVATE
+    // KEY stays in server state only — the client never sees it. The client
+    // drives MetaMask to grant an erc20-token-periodic permission `to` this
+    // session address, then POSTs the granted context to /api/grant.
+    //
+    // We also pre-generate + gas-fund the SELLER EOA (the redeemer that pays gas
+    // when redeeming the granted budget via redeemDelegations).
     const { generatePrivateKey, privateKeyToAccount } = await import("viem/accounts");
     const { createPublicClient, createWalletClient, http, parseEther } = await import("viem");
     const { baseSepolia } = await import("viem/chains");
-    const { openSession } = await import("@sip402/client");
 
     const ownerKey = ownerPrivateKey() as `0x${string}`;
 
-    const session = await openSession({
-      ownerPrivateKey: ownerKey,
-      capUsd: 1,
-      periodSeconds: 86400,
-    });
-    state.session = session;
+    // Session keypair = the grant DELEGATE (signs the open redelegation).
+    const sessionKey = generatePrivateKey();
+    const sessionAccount = privateKeyToAccount(sessionKey);
+    state.sessionPrivateKey = sessionKey;
+    state.sessionAddress = sessionAccount.address;
 
+    // Seller keypair = the on-chain REDEEMER (pays gas, receives USDC).
     const sellerKey = generatePrivateKey();
     const seller = privateKeyToAccount(sellerKey);
     state.sellerPrivateKey = sellerKey;
@@ -78,6 +85,7 @@ export async function POST() {
       transport: http(DEFAULT_RPC_URL),
       account: ownerAccount,
     });
+    // Fund the seller EOA with a little ETH so it can pay gas to redeem.
     const sellerEth = await publicClient.getBalance({ address: seller.address });
     if (sellerEth < parseEther("0.01")) {
       const fundHash = await walletClient.sendTransaction({
@@ -92,21 +100,23 @@ export async function POST() {
     pushEvent({
       type: "status",
       payload: {
-        msg: "Session opened",
+        msg: "Session keypair generated — awaiting MetaMask permission grant",
         network: "base-sepolia",
-        treasury: session.treasuryAddress,
-        agent: session.agentAddress,
-        capUsd: 1,
+        sessionAddress: sessionAccount.address,
         sellerAddress: seller.address,
       },
     });
 
+    // capUsd here is the per-agent display cap; the real on-chain cap is the
+    // 2-USDC/day periodic permission the user grants in MetaMask.
     return NextResponse.json({
       network: "base-sepolia",
-      treasury: session.treasuryAddress,
-      agent: session.agentAddress,
-      capUsd: 1,
+      sessionAddress: sessionAccount.address,
       sellerAddress: seller.address,
+      // Keep treasury/agent/capUsd present so the existing UI types still validate.
+      treasury: sessionAccount.address,
+      agent: sessionAccount.address,
+      capUsd: 1,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
