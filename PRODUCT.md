@@ -9,7 +9,7 @@ sip402 — "Session-Initiated Payments. Open a tab, pay by the sip." The first o
 Crypto-native developers, agent builders, and hackathon judges evaluating an agent-payments protocol. They are technical, skeptical of hand-waving, and reward proof (real on-chain transactions) over claims.
 
 ## Brand voice (three physical words)
-**Metered. Frank. Taut.** Like a precise bar tab printed on warm thermal paper: every sip accounted for, nothing hidden, no decoration that doesn't earn its ink.
+**Clean. Confident. Merchandised.** A hardware merchandiser's poise: stark white canvas, tight type hierarchy, big soft-rounded cards, pill CTAs. Black pills sell the idea; one cobalt pill closes the deal.
 
 ## Strategic principles
 - **Proof over pitch.** Every claim links to a real Basescan transaction. The hero's credibility comes from "here is the tx," not adjectives.
@@ -21,7 +21,7 @@ Crypto-native developers, agent builders, and hackathon judges evaluating an age
 - Crypto neon-on-black (the first reflex). No electric cyan/green glow.
 - Terminal-green dark mode (the second reflex).
 - Editorial-magazine (display-serif + italic + ruled columns).
-- Generic SaaS hero-metric template (big number + 3 supporting stats + gradient).
+- Generic SaaS hero-metric template (big number + 3 supporting stats + gradient accent).
 
 ## Aesthetic lane (named)
-"Warm-ink ledger / financial instrument." Deep warm-dark, single committed amber, monospace earned for data. Reference mood: a high-end thermal receipt meets a flight-recorder readout, in honey-amber on warm black.
+Meta commerce. Stark white canvas, Optimistic-VF-style Inter (weight 500 display + ss01/ss02), a two-tier CTA system (black pills on marketing, one cobalt pill in the demo's buy-flow), ghost-outline secondary, big soft-rounded white cards with hairline borders, flat by default. See DESIGN.md for the full system.
