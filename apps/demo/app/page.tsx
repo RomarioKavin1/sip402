@@ -14,8 +14,8 @@ const testnetProof: Array<{ label: string; hash: string; href: string }> = [
   },
   {
     label: "Over-cap draw reverted on-chain (dry tab)",
-    hash: "0xc478…",
-    href: `${SEPOLIA}/0xc478`,
+    hash: "0xc478…2655",
+    href: `${SEPOLIA}/0xc478ba71bbaecb66efe3f65866adc6e57675baad05246b3cb4ac9f9c020a2655`,
   },
   {
     label: "Commitment = redelegation · A2A depth-4 chain",
@@ -41,6 +41,8 @@ const testnetProof: Array<{ label: string; hash: string; href: string }> = [
 
 const MAINNET_1SHOT =
   "0x26a44ffedefb113e6a6c1aa266985076684dea9faaea097f92e4f3e1731940e9";
+const MAINNET_VENICE =
+  "0x2557becd49e3611b92ae089eb00d867672fcba4b61e2abfcbb6b98c010bc43e9";
 
 // ── small presentational atoms ───────────────────────────────────────────────
 
@@ -317,8 +319,8 @@ export default function Home() {
                 />
                 <ProofRow
                   label="Real Venice inference · per-token draws"
-                  hash="0x26a4…40e9"
-                  href={`${MAINNET}/${MAINNET_1SHOT}`}
+                  hash="0x2557…43e9"
+                  href={`${MAINNET}/${MAINNET_VENICE}`}
                 />
               </div>
               <p className="mt-4 prose-measure text-sm leading-relaxed text-text-faint">
