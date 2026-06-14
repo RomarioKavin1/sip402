@@ -85,11 +85,13 @@ export async function POST() {
       transport: http(DEFAULT_RPC_URL),
       account: ownerAccount,
     });
-    // Fund the seller EOA with a little ETH so it can pay gas to redeem.
-    const sellerEth = await publicClient.getBalance({ address: seller.address });
-    if (sellerEth < parseEther("0.01")) {
+    // Fund the SESSION EOA — it is the grant's delegate and redeems the granted
+    // permission on-chain directly (pays gas). Funded at open time so it is
+    // confirmed before "Run cascade" (avoids an RPC-lag race mid-run).
+    const sessionEth = await publicClient.getBalance({ address: sessionAccount.address });
+    if (sessionEth < parseEther("0.01")) {
       const fundHash = await walletClient.sendTransaction({
-        to: seller.address,
+        to: sessionAccount.address,
         value: parseEther("0.02"),
         account: ownerAccount,
         chain: baseSepolia,

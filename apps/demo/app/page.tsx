@@ -1,696 +1,448 @@
-"use client";
+import Link from "next/link";
+import HeroTicker from "./HeroTicker";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+// ── Proof links (real on-chain evidence; README "Proven on Base Sepolia") ────
 
-// ── Types ──────────────────────────────────────────────────────────────────
+const SEPOLIA = "https://sepolia.basescan.org/tx";
+const MAINNET = "https://basescan.org/tx";
 
-interface SettlementEntry {
-  agent: "writer" | "illustrator" | "researcher";
-  amountAtoms: bigint;
-  txHash?: string;
-  at: number;
-}
+const testnetProof: Array<{ label: string; hash: string; href: string }> = [
+  {
+    label: "Periodic delegation · cumulative draws",
+    hash: "0xca04…b73b",
+    href: `${SEPOLIA}/0xca047bebde0805b071a3b2eb7d245d61c56ec77550e03635434c6dc20dd8b73b`,
+  },
+  {
+    label: "Over-cap draw reverted on-chain (dry tab)",
+    hash: "0xc478…",
+    href: `${SEPOLIA}/0xc478`,
+  },
+  {
+    label: "Commitment = redelegation · A2A depth-4 chain",
+    hash: "0xcc1b…b153",
+    href: `${SEPOLIA}/0xcc1ba35facadf92945c01b31da6a9574ceec36a27cddfd29bf36989e9356b153`,
+  },
+  {
+    label: "Batch redemption · 3 commitments in ONE tx",
+    hash: "0x3b95…d9fa",
+    href: `${SEPOLIA}/0x3b9583c3825612ef2a0bcc5ddbd75efc0ae73c3c897414700ec317a1bb41d9fa`,
+  },
+  {
+    label: "Streaming per-batch draws → dry-tab at $1.00",
+    hash: "0x5ba8…a931c",
+    href: `${SEPOLIA}/0x5ba8a54a8cd397cd6522d4dd70b4f690fa99fc7d30d11829bccd8711966a931c`,
+  },
+  {
+    label: "Revoke halts an agent mid-run",
+    hash: "0x9c2c…1a10f",
+    href: `${SEPOLIA}/0x9c2ccef0bceec5f82ca8d3ddf0d9a461b57b147ef9860285de874dcc1361a10f`,
+  },
+];
 
-interface DemoData {
-  treasury: string;
-  agent: string;
-  capUsd: number;
-  sellerAddress: string;
-  network?: string;
-  budgetUsd?: number;
-  // Testnet MetaMask grant flow
-  sessionAddress?: string;
-}
+const MAINNET_1SHOT =
+  "0x26a44ffedefb113e6a6c1aa266985076684dea9faaea097f92e4f3e1731940e9";
 
-// Base Sepolia
-const BASE_SEPOLIA_CHAIN_ID = 84532;
-const BASE_SEPOLIA_HEX = "0x14a34";
-const USDC_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+// ── small presentational atoms ───────────────────────────────────────────────
 
-// Minimal EIP-1193 provider shape (window.ethereum).
-interface Eip1193Provider {
-  request: (args: { method: string; params?: unknown[] | object }) => Promise<unknown>;
-}
-declare global {
-  interface Window {
-    ethereum?: Eip1193Provider;
-  }
-}
-
-interface AgentState {
-  drawn: bigint;
-  text: string;
-  revoked: boolean;
-}
-
-interface NetworkConfig {
-  isMainnet: boolean;
-  network: string;
-  basescanBase: string;
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-function atomsToUsd(atoms: bigint): string {
-  const cents = Number(atoms) / 1_000_000;
-  return cents.toFixed(6);
-}
-
-function shortAddr(addr: string) {
-  return addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : "";
-}
-
-// ── Main page ──────────────────────────────────────────────────────────────
-
-export default function DemoPage() {
-  const [phase, setPhase] = useState<"idle" | "open" | "running" | "done">("idle");
-  const [demo, setDemo] = useState<DemoData | null>(null);
-  const [receipts, setReceipts] = useState<SettlementEntry[]>([]);
-  const [totalDrawn, setTotalDrawn] = useState<bigint>(0n);
-  const [writer, setWriter] = useState<AgentState>({ drawn: 0n, text: "", revoked: false });
-  const [illustrator, setIllustrator] = useState<AgentState>({ drawn: 0n, text: "", revoked: false });
-  const [researcher, setResearcher] = useState<AgentState>({ drawn: 0n, text: "", revoked: false });
-  const [statusLog, setStatusLog] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [granted, setGranted] = useState(false);
-  const [netConfig, setNetConfig] = useState<NetworkConfig>({
-    isMainnet: false,
-    network: "base-sepolia",
-    basescanBase: "https://sepolia.basescan.org/tx",
-  });
-  const evtSourceRef = useRef<EventSource | null>(null);
-  const writerTextRef = useRef<HTMLDivElement>(null);
-  const illustratorTextRef = useRef<HTMLDivElement>(null);
-  const researcherTextRef = useRef<HTMLDivElement>(null);
-
-  // Ticker animation
-  const [tickerGlow, setTickerGlow] = useState(false);
-
-  const addStatus = useCallback((msg: string) => {
-    setStatusLog((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 50));
-  }, []);
-
-  // Fetch network config once on mount
-  useEffect(() => {
-    fetch("/api/config")
-      .then((r) => r.json())
-      .then((cfg) => setNetConfig(cfg as NetworkConfig))
-      .catch(() => {/* use default */});
-  }, []);
-
-  // ── SSE listener ──────────────────────────────────────────────────────────
-
-  useEffect(() => {
-    if (phase === "idle") return;
-
-    const es = new EventSource("/api/events");
-    evtSourceRef.current = es;
-
-    es.onmessage = (e) => {
-      try {
-        const evt = JSON.parse(e.data) as {
-          type: string;
-          agent?: "writer" | "illustrator" | "researcher";
-          payload?: Record<string, unknown>;
-        };
-        if (evt.type === "ping") return;
-
-        if (evt.type === "settlement" && evt.agent) {
-          const agent = evt.agent;
-          const amountAtoms = BigInt((evt.payload?.amountAtoms as string) ?? "0");
-          const entry: SettlementEntry = {
-            agent,
-            amountAtoms,
-            txHash: evt.payload?.txHash as string | undefined,
-            at: (evt.payload?.at as number) ?? Date.now(),
-          };
-          setReceipts((prev) => [entry, ...prev].slice(0, 50));
-          setTotalDrawn((prev) => prev + amountAtoms);
-          setTickerGlow(true);
-          setTimeout(() => setTickerGlow(false), 600);
-          if (agent === "writer") {
-            setWriter((prev) => ({ ...prev, drawn: prev.drawn + amountAtoms }));
-          } else if (agent === "illustrator") {
-            setIllustrator((prev) => ({ ...prev, drawn: prev.drawn + amountAtoms }));
-          } else if (agent === "researcher") {
-            setResearcher((prev) => ({ ...prev, drawn: prev.drawn + amountAtoms }));
-          }
-        }
-
-        if (evt.type === "agent_text" && evt.agent) {
-          const agent = evt.agent;
-          const text = (evt.payload?.text as string) ?? "";
-          if (agent === "writer") {
-            setWriter((prev) => ({ ...prev, text: prev.text + text }));
-            requestAnimationFrame(() => {
-              if (writerTextRef.current) {
-                writerTextRef.current.scrollTop = writerTextRef.current.scrollHeight;
-              }
-            });
-          } else if (agent === "illustrator") {
-            setIllustrator((prev) => ({ ...prev, text: prev.text + text }));
-            requestAnimationFrame(() => {
-              if (illustratorTextRef.current) {
-                illustratorTextRef.current.scrollTop = illustratorTextRef.current.scrollHeight;
-              }
-            });
-          } else if (agent === "researcher") {
-            setResearcher((prev) => ({ ...prev, text: prev.text + text }));
-            requestAnimationFrame(() => {
-              if (researcherTextRef.current) {
-                researcherTextRef.current.scrollTop = researcherTextRef.current.scrollHeight;
-              }
-            });
-          }
-        }
-
-        if (evt.type === "status") {
-          const msg = (evt.payload?.msg as string) ?? JSON.stringify(evt.payload);
-          addStatus(msg);
-          if (msg === "Cascade complete") {
-            setPhase("done");
-          }
-          if (evt.agent && msg.includes("revoked")) {
-            const agent = evt.agent;
-            if (agent === "writer") setWriter((prev) => ({ ...prev, revoked: true }));
-            else if (agent === "illustrator") setIllustrator((prev) => ({ ...prev, revoked: true }));
-          }
-        }
-      } catch { /* ignore parse errors */ }
-    };
-
-    es.onerror = () => {
-      if (phase === "done") es.close();
-    };
-
-    return () => {
-      es.close();
-      evtSourceRef.current = null;
-    };
-  }, [phase, addStatus]);
-
-  // ── Actions ───────────────────────────────────────────────────────────────
-
-  async function handleOpen() {
-    setError(null);
-    setPhase("open");
-    setGranted(false);
-    // Reset agent state on new open
-    setWriter({ drawn: 0n, text: "", revoked: false });
-    setIllustrator({ drawn: 0n, text: "", revoked: false });
-    setResearcher({ drawn: 0n, text: "", revoked: false });
-    setReceipts([]);
-    setTotalDrawn(0n);
-    addStatus("Opening session...");
-    try {
-      const res = await fetch("/api/open", { method: "POST" });
-      const data = await res.json() as DemoData & { error?: string };
-      if (!res.ok) throw new Error(data.error ?? "open failed");
-      setDemo(data);
-
-      if (data.network === "base") {
-        // ── Mainnet: server-side agent, no wallet popup ──
-        addStatus(`Mainnet session ready — agent ${shortAddr(data.agent)}`);
-        setGranted(true); // mainnet needs no grant; enable Run
-        return;
-      }
-
-      // ── Testnet: drive MetaMask for a real ERC-7715 permission grant ──
-      if (!data.sessionAddress) throw new Error("open did not return a session address");
-      addStatus(`Session keypair ready — session ${shortAddr(data.sessionAddress)}`);
-      await requestMetaMaskGrant(data.sessionAddress as `0x${string}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setPhase("idle");
-    }
-  }
-
-  // Drive MetaMask to grant a real ERC-7715 erc20-token-periodic permission
-  // (2 USDC/day) to the server's session account, then POST it to /api/grant.
-  async function requestMetaMaskGrant(sessionAddress: `0x${string}`) {
-    if (typeof window === "undefined" || !window.ethereum) {
-      throw new Error("MetaMask not detected — install MetaMask to grant the permission");
-    }
-    const ethereum = window.ethereum;
-
-    // 1. Connect.
-    addStatus("Connecting MetaMask...");
-    const accounts = (await ethereum.request({ method: "eth_requestAccounts" })) as string[];
-    const account = accounts?.[0];
-    if (!account) throw new Error("no MetaMask account connected");
-    addStatus(`Connected ${shortAddr(account)}`);
-
-    // 2. Ensure Base Sepolia (84532).
-    const currentChain = (await ethereum.request({ method: "eth_chainId" })) as string;
-    if (currentChain?.toLowerCase() !== BASE_SEPOLIA_HEX) {
-      addStatus("Switching MetaMask to Base Sepolia...");
-      try {
-        await ethereum.request({
-          method: "wallet_switchEthereumChain",
-          params: [{ chainId: BASE_SEPOLIA_HEX }],
-        });
-      } catch (switchErr) {
-        const code = (switchErr as { code?: number })?.code;
-        if (code === 4902) {
-          await ethereum.request({
-            method: "wallet_addEthereumChain",
-            params: [
-              {
-                chainId: BASE_SEPOLIA_HEX,
-                chainName: "Base Sepolia",
-                nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-                rpcUrls: ["https://sepolia.base.org"],
-                blockExplorerUrls: ["https://sepolia.basescan.org"],
-              },
-            ],
-          });
-        } else {
-          throw switchErr;
-        }
-      }
-    }
-
-    // 3. Build a wallet client with the ERC-7715 provider actions and request the grant.
-    addStatus("Requesting ERC-7715 permission (approve in MetaMask)...");
-    const { createWalletClient, custom, parseUnits } = await import("viem");
-    const { baseSepolia } = await import("viem/chains");
-    const { erc7715ProviderActions } = await import("@metamask/smart-accounts-kit/actions");
-
-    const walletClient = createWalletClient({
-      account: account as `0x${string}`,
-      chain: baseSepolia,
-      transport: custom(ethereum),
-    }).extend(erc7715ProviderActions());
-
-    const now = Math.floor(Date.now() / 1000);
-    const grants = await walletClient.requestExecutionPermissions([
-      {
-        chainId: BASE_SEPOLIA_CHAIN_ID,
-        expiry: now + 7 * 24 * 60 * 60, // 7 days
-        to: sessionAddress,
-        permission: {
-          type: "erc20-token-periodic",
-          data: {
-            tokenAddress: USDC_BASE_SEPOLIA as `0x${string}`,
-            periodAmount: parseUnits("2", 6), // 2 USDC
-            periodDuration: 86400, // per day
-            startTime: now,
-            justification: "sip402: let this agent spend up to 2 USDC/day",
-          },
-          isAdjustmentAllowed: true,
-        },
-      },
-    ]);
-
-    const grant = grants?.[0];
-    if (!grant || !grant.context) {
-      throw new Error("MetaMask returned no permission context");
-    }
-    addStatus(`Permission granted — context ${(grant.context.length - 2) / 2} bytes`);
-
-    // 4. Persist the granted context server-side as the session ROOT.
-    const grantRes = await fetch("/api/grant", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        context: grant.context,
-        from: grant.from,
-        delegationManager: grant.delegationManager,
-        dependencies: grant.dependencies,
-        chainId: BASE_SEPOLIA_CHAIN_ID,
-      }),
-    });
-    const grantData = (await grantRes.json()) as { ok?: boolean; error?: string };
-    if (!grantRes.ok || !grantData.ok) {
-      throw new Error(grantData.error ?? "failed to store grant");
-    }
-
-    setGranted(true);
-    addStatus("Permission stored — agent can now spend within the 2 USDC/day cap");
-  }
-
-  async function handleRun() {
-    if (!demo) return;
-    setError(null);
-    setPhase("running");
-    addStatus(netConfig.isMainnet ? "Starting mainnet Venice run..." : "Starting cascade...");
-    try {
-      const res = await fetch("/api/run", { method: "POST" });
-      if (!res.ok) {
-        const data = await res.json() as { error?: string };
-        throw new Error(data.error ?? "run failed");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setPhase("done");
-    }
-  }
-
-  async function handleRevoke(agent: "writer" | "illustrator") {
-    addStatus(`Revoking ${agent}...`);
-    try {
-      const res = await fetch("/api/revoke", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent }),
-      });
-      const data = await res.json() as { ok?: boolean; txHash?: string; error?: string };
-      if (!res.ok) throw new Error(data.error ?? "revoke failed");
-      addStatus(`${agent} revoked — tx ${data.txHash ?? "unknown"}`);
-    } catch (err) {
-      addStatus(`revoke error: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  // ── Render ─────────────────────────────────────────────────────────────────
-
-  const CAP_ATOMS = netConfig.isMainnet ? 150_000n : 400_000n; // $0.15 mainnet / $0.40 testnet
-  const capLabel = netConfig.isMainnet ? "$0.15" : "$0.40";
-  const totalCapAtoms = netConfig.isMainnet ? 150_000n : 1_000_000n;
-  const totalCapLabel = netConfig.isMainnet ? "$0.15" : "$1.00";
-  const networkLabel = netConfig.isMainnet ? "Base mainnet" : "Base Sepolia";
-  const networkColor = netConfig.isMainnet ? "text-orange-400" : "text-indigo-400";
-  const networkBadgeBg = netConfig.isMainnet
-    ? "bg-orange-950 border-orange-700 text-orange-300"
-    : "bg-indigo-950 border-indigo-700 text-indigo-300";
-
-  const basescanTxUrl = (hash: string) => `${netConfig.basescanBase}/${hash}`;
-
+function Kicker({ children }: { children: React.ReactNode }) {
   return (
-    <main className="min-h-screen bg-[#0a0a0f] text-slate-200 p-6 max-w-6xl mx-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight text-white">
-            sip402 <span className={networkColor}>demo</span>
-          </h1>
-          <p className="text-xs text-slate-500 mt-0.5">batch-settlement · {networkLabel} · live draws</p>
+    <p className="font-mono text-xs uppercase tracking-[0.2em] text-amber">
+      {children}
+    </p>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="mb-3 font-mono text-xs uppercase tracking-[0.2em] text-text-faint">
+      {children}
+    </p>
+  );
+}
+
+function ProofRow({
+  label,
+  hash,
+  href,
+}: {
+  label: string;
+  hash: string;
+  href: string;
+}) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group flex items-center justify-between gap-4 border-b border-line-soft py-3 transition-colors last:border-0 hover:bg-ink-2"
+    >
+      <span className="text-sm text-text-dim transition-colors group-hover:text-text">
+        {label}
+      </span>
+      <span className="flex shrink-0 items-center gap-1.5 font-mono text-xs text-text-faint transition-colors group-hover:text-amber">
+        {hash}
+        <span aria-hidden>↗</span>
+      </span>
+    </a>
+  );
+}
+
+export default function Home() {
+  return (
+    <main>
+      {/* ── HERO ─────────────────────────────────────────────────────────── */}
+      <section className="mx-auto max-w-6xl px-5 pb-24 pt-20 sm:px-8 sm:pb-32 sm:pt-28">
+        <div className="reveal" style={{ animationDelay: "0ms" }}>
+          <Kicker>x402 binding · batch-settlement · ERC-7710</Kicker>
         </div>
-        <div className="flex items-center gap-3">
-          {/* Network badge */}
-          <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${networkBadgeBg}`}>
-            {netConfig.isMainnet ? "Base mainnet" : "Base Sepolia"}
+
+        <h1
+          className="reveal mt-6 max-w-4xl display-1 font-extrabold text-text"
+          style={{ animationDelay: "80ms" }}
+        >
+          Open a tab.
+          <br />
+          Pay <span className="text-amber">by the sip.</span>
+        </h1>
+
+        <p
+          className="reveal mt-8 prose-measure text-lg leading-relaxed text-text-dim"
+          style={{ animationDelay: "160ms" }}
+        >
+          One MetaMask permission opens a metered, revocable USDC session. An
+          agent sips against it as a paid AI stream is delivered. The chain
+          enforces the cap and the revoke. No custodian ever holds the funds.
+        </p>
+
+        <div
+          className="reveal mt-10 flex flex-wrap items-center gap-4"
+          style={{ animationDelay: "240ms" }}
+        >
+          <Link
+            href="/dashboard"
+            className="rounded-md border border-amber bg-amber px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-amber-deep"
+          >
+            Launch the demo
+          </Link>
+          <Link
+            href="/docs"
+            className="rounded-md border rule px-5 py-2.5 text-sm font-medium text-text transition-colors hover:bg-ink-2"
+          >
+            Read the docs
+          </Link>
+        </div>
+
+        {/* live-feel amber ticker motif (decorative, counts on the client) */}
+        <div
+          className="reveal mt-16 inline-flex items-baseline gap-3 border-t rule pt-6"
+          style={{ animationDelay: "320ms" }}
+        >
+          <span className="font-mono text-xs uppercase tracking-[0.2em] text-text-faint">
+            drawn this session
           </span>
-          <button
-            onClick={handleOpen}
-            disabled={phase !== "idle"}
-            className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition-colors"
-          >
-            Open tab
-          </button>
-          <button
-            onClick={handleRun}
-            disabled={phase !== "open" || !demo || !granted}
-            className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition-colors"
-          >
-            {netConfig.isMainnet ? "Run Venice" : "Run cascade"}
-          </button>
+          <HeroTicker />
+          <span className="font-mono text-xs text-text-faint">USDC</span>
         </div>
-      </div>
+      </section>
 
-      {error && (
-        <div className="mb-6 p-3 rounded-lg bg-red-950 border border-red-800 text-red-300 text-sm">
-          {error}
-        </div>
-      )}
-
-      {/* MetaMask ERC-7715 grant status (testnet only) */}
-      {!netConfig.isMainnet && demo && phase !== "idle" && (
-        granted ? (
-          <div className="mb-6 p-3 rounded-lg bg-emerald-950 border border-emerald-800 text-emerald-300 text-sm flex items-center gap-2">
-            <span>✅</span>
-            <span>
-              Permission granted via MetaMask — agent may spend up to{" "}
-              <span className="font-mono font-semibold">2 USDC / day</span>
-              {demo.sessionAddress && (
-                <> · session <span className="font-mono">{shortAddr(demo.sessionAddress)}</span></>
-              )}
-            </span>
-          </div>
-        ) : (
-          <div className="mb-6 p-3 rounded-lg bg-amber-950 border border-amber-800 text-amber-300 text-sm flex items-center gap-2">
-            <span>⏳</span>
-            <span>Approve the ERC-7715 Advanced Permission in the MetaMask popup to enable the run.</span>
-          </div>
-        )
-      )}
-
-      {/* Top row: delegation tree + USDC ticker */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-
-        {/* Delegation Tree / Session info */}
-        <div className="rounded-xl bg-[#12121a] border border-slate-800 p-5">
-          <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-4">
-            {netConfig.isMainnet ? "Session" : "Delegation Tree"}
+      {/* ── THE INSIGHT ──────────────────────────────────────────────────── */}
+      <section className="border-t rule">
+        <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
+          <SectionLabel>The one idea</SectionLabel>
+          <h2 className="max-w-3xl display-2 font-semibold text-text">
+            x402 prices the request.
+            <br />
+            sip402 prices the <span className="text-amber">delivery.</span>
           </h2>
-          {netConfig.isMainnet ? (
-            /* Mainnet: simple agent address display */
-            <div className="space-y-3">
-              <div className="flex items-center gap-3">
-                <span className="text-orange-500 text-xs">◆</span>
-                <div>
-                  <span className="text-slate-300 text-sm">researcher</span>
-                  {demo && (
-                    <span className="ml-2 text-slate-600 text-xs font-mono">{shortAddr(demo.agent)}</span>
-                  )}
-                </div>
-                <div className="ml-auto">
-                  <span className="text-xs font-mono text-emerald-400">
-                    ${atomsToUsd(researcher.drawn)} <span className="text-slate-600">/ {capLabel}</span>
-                  </span>
-                </div>
-              </div>
-              <div className="mt-2 text-xs text-slate-600 font-mono">
-                Venice model: llama-3.3-70b · gasless 1Shot draws
-              </div>
-            </div>
-          ) : (
-            /* Testnet: full delegation tree */
-            <div className="space-y-3">
-              <div className="flex items-center gap-3">
-                <span className="text-slate-500 text-xs">▣</span>
-                <div>
-                  <span className="text-slate-300 text-sm">treasury</span>
-                  {demo && (
-                    <span className="ml-2 text-slate-600 text-xs font-mono">{shortAddr(demo.treasury)}</span>
-                  )}
-                </div>
-                <div className="ml-auto">
-                  <span className="text-xs font-mono text-emerald-400">
-                    ${atomsToUsd(totalDrawn)} <span className="text-slate-600">/ {totalCapLabel}</span>
-                  </span>
-                </div>
-              </div>
-              <div className="ml-4 border-l border-slate-800 pl-4 space-y-3">
-                <div className="flex items-center gap-3">
-                  <span className="text-slate-500 text-xs">◈</span>
-                  <span className="text-slate-300 text-sm">orchestrator</span>
-                  {demo && (
-                    <span className="ml-2 text-slate-600 text-xs font-mono">{shortAddr(demo.agent)}</span>
-                  )}
-                  <div className="ml-auto">
-                    <span className="text-xs font-mono text-emerald-400">cap {totalCapLabel}</span>
-                  </div>
-                </div>
-                <div className="ml-4 border-l border-slate-800 pl-4 space-y-3">
-                  {(["writer", "illustrator"] as const).map((agent) => {
-                    const a = agent === "writer" ? writer : illustrator;
-                    return (
-                      <div key={agent} className="flex items-center gap-3">
-                        <span className={`text-xs ${a.revoked ? "text-red-500" : "text-slate-500"}`}>◆</span>
-                        <span className={`text-sm ${a.revoked ? "text-red-400 line-through" : "text-slate-300"}`}>
-                          {agent}
-                        </span>
-                        <div className="ml-auto text-right">
-                          <span className="text-xs font-mono text-emerald-400">
-                            ${atomsToUsd(a.drawn)} <span className="text-slate-600">/ {capLabel}</span>
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
 
-        {/* USDC ticker */}
-        <div className="rounded-xl bg-[#12121a] border border-slate-800 p-5 flex flex-col items-center justify-center">
-          <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-3">
-            Total drawn
-          </p>
-          <div
-            className={`text-5xl font-mono font-semibold transition-all duration-300 ${
-              tickerGlow ? "text-emerald-300 drop-shadow-[0_0_20px_rgba(52,211,153,0.6)]" : "text-emerald-400"
-            }`}
-          >
-            ${atomsToUsd(totalDrawn)}
-          </div>
-          <p className={`text-xs mt-2 font-mono ${netConfig.isMainnet ? "text-orange-500" : "text-slate-600"}`}>
-            USDC · {networkLabel}
-          </p>
-          <div className="mt-4 w-full bg-slate-800 rounded-full h-1.5">
-            <div
-              className={`h-1.5 rounded-full transition-all duration-500 ${netConfig.isMainnet ? "bg-orange-500" : "bg-emerald-500"}`}
-              style={{ width: `${Math.min(100, (Number(totalDrawn) / Number(totalCapAtoms)) * 100)}%` }}
-            />
-          </div>
-          <p className="text-xs text-slate-600 mt-1">of {totalCapLabel} cap</p>
-        </div>
-      </div>
-
-      {/* Agent panels */}
-      {netConfig.isMainnet ? (
-        /* Mainnet: single researcher panel */
-        <div className="mb-4">
-          <div className="rounded-xl bg-[#12121a] border border-orange-900/40 p-5">
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <h3 className="text-sm font-medium text-slate-200">researcher</h3>
-                <div className="mt-1 flex items-center gap-2">
-                  <div className="bg-slate-800 rounded-full h-1 w-32">
-                    <div
-                      className="bg-orange-500 h-1 rounded-full transition-all duration-500"
-                      style={{ width: `${Math.min(100, CAP_ATOMS > 0n ? Number((researcher.drawn * 100n) / CAP_ATOMS) : 0)}%` }}
-                    />
-                  </div>
-                  <span className="text-xs font-mono text-slate-500">
-                    ${atomsToUsd(researcher.drawn)} / {capLabel}
-                  </span>
-                </div>
-              </div>
-              <span className="px-2 py-0.5 text-xs rounded bg-orange-950 border border-orange-800 text-orange-300">
-                llama-3.3-70b
-              </span>
+          <div className="mt-12 overflow-hidden rounded-lg border rule">
+            <div className="grid grid-cols-[88px_1fr] items-center gap-4 border-b rule bg-ink-2 px-5 py-3 font-mono text-xs uppercase tracking-wider text-text-faint sm:grid-cols-[120px_1fr_220px]">
+              <span>scheme</span>
+              <span className="hidden sm:block">what it settles</span>
+              <span className="sm:text-right">the catch</span>
             </div>
-            <div
-              ref={researcherTextRef}
-              className="bg-[#0d0d14] rounded-lg p-3 h-40 overflow-y-auto text-xs text-slate-400 leading-relaxed font-mono"
-            >
-              {researcher.text || (
-                <span className="text-slate-700">
-                  {phase === "running" ? "Streaming Venice inference..." : "No output yet"}
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-      ) : (
-        /* Testnet: two agent panels */
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-          {(["writer", "illustrator"] as const).map((agent) => {
-            const a = agent === "writer" ? writer : illustrator;
-            const pct = CAP_ATOMS > 0n ? Number((a.drawn * 100n) / CAP_ATOMS) : 0;
-            return (
+            {[
+              {
+                k: "exact",
+                what: "one transfer, fixed amount, settled once",
+                catch: "no relationship",
+              },
+              {
+                k: "upto",
+                what: "settles once after delivery, up to a max",
+                catch: "trust the server's meter",
+              },
+              {
+                k: "sip402",
+                what: "a standing session, many small draws",
+                catch: "cap enforced on-chain",
+                amber: true,
+              },
+            ].map((r) => (
               <div
-                key={agent}
-                className={`rounded-xl bg-[#12121a] border p-5 ${
-                  a.revoked ? "border-red-900" : "border-slate-800"
-                }`}
+                key={r.k}
+                className="grid grid-cols-[88px_1fr] items-center gap-4 border-b border-line-soft px-5 py-4 last:border-0 sm:grid-cols-[120px_1fr_220px]"
               >
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <h3 className="text-sm font-medium text-slate-200 capitalize">{agent}</h3>
-                    <div className="mt-1 flex items-center gap-2">
-                      <div className="bg-slate-800 rounded-full h-1 w-32">
-                        <div
-                          className="bg-indigo-500 h-1 rounded-full transition-all duration-500"
-                          style={{ width: `${Math.min(100, pct)}%` }}
-                        />
-                      </div>
-                      <span className="text-xs font-mono text-slate-500">
-                        ${atomsToUsd(a.drawn)} / {capLabel}
-                      </span>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => handleRevoke(agent)}
-                    disabled={a.revoked || phase === "idle" || phase === "open"}
-                    className="px-3 py-1.5 text-xs rounded-lg bg-red-900 hover:bg-red-800 disabled:opacity-40 disabled:cursor-not-allowed border border-red-700 text-red-300 transition-colors"
-                  >
-                    {a.revoked ? "Revoked" : "Revoke"}
-                  </button>
-                </div>
-                <div
-                  ref={agent === "writer" ? writerTextRef : illustratorTextRef}
-                  className="bg-[#0d0d14] rounded-lg p-3 h-32 overflow-y-auto text-xs text-slate-400 leading-relaxed font-mono"
-                >
-                  {a.text || (
-                    <span className="text-slate-700">
-                      {phase === "running" ? "Waiting for tokens..." : "No output yet"}
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Receipt feed */}
-      <div className="rounded-xl bg-[#12121a] border border-slate-800 p-5 mb-4">
-        <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-3">
-          Receipt Feed
-        </h2>
-        {receipts.length === 0 ? (
-          <p className="text-slate-700 text-xs">No settlements yet</p>
-        ) : (
-          <div className="space-y-2 max-h-48 overflow-y-auto">
-            {receipts.map((r, i) => (
-              <div
-                key={i}
-                className="flex items-center gap-3 text-xs font-mono py-1.5 border-b border-slate-800/50 last:border-0"
-              >
-                <span className="text-slate-600 shrink-0">
-                  {new Date(r.at).toLocaleTimeString()}
-                </span>
                 <span
-                  className={`px-1.5 py-0.5 rounded text-xs font-medium shrink-0 ${
-                    r.agent === "writer"
-                      ? "bg-indigo-950 text-indigo-300"
-                      : r.agent === "illustrator"
-                      ? "bg-purple-950 text-purple-300"
-                      : "bg-orange-950 text-orange-300"
+                  className={`font-mono text-sm ${
+                    r.amber ? "font-medium text-amber" : "text-text-dim"
                   }`}
                 >
-                  {r.agent}
+                  {r.k}
                 </span>
-                <span className="text-emerald-400 shrink-0">${atomsToUsd(r.amountAtoms)}</span>
-                <span className="text-slate-600">·</span>
-                {r.txHash ? (
-                  <a
-                    href={basescanTxUrl(r.txHash)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-indigo-400 hover:text-indigo-300 underline underline-offset-2 truncate"
-                  >
-                    {shortAddr(r.txHash)} ↗
-                  </a>
-                ) : (
-                  <span className="text-red-500">reverted</span>
-                )}
+                <span className="text-sm text-text-dim">{r.what}</span>
+                <span
+                  className={`font-mono text-xs sm:text-right ${
+                    r.amber ? "text-amber" : "text-text-faint"
+                  }`}
+                >
+                  {r.catch}
+                </span>
               </div>
             ))}
           </div>
-        )}
-      </div>
-
-      {/* Status log */}
-      <div className="rounded-xl bg-[#12121a] border border-slate-800 p-5">
-        <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-3">
-          Status
-        </h2>
-        <div className="max-h-32 overflow-y-auto space-y-1">
-          {statusLog.length === 0 ? (
-            <p className="text-slate-700 text-xs">Ready. Press Open tab to start.</p>
-          ) : (
-            statusLog.map((s, idx) => (
-              <p key={idx} className="text-xs text-slate-500 font-mono">{s}</p>
-            ))
-          )}
         </div>
-      </div>
+      </section>
+
+      {/* ── HOW IT WORKS — Grant → Spend → Enforce ───────────────────────── */}
+      <section className="border-t rule">
+        <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
+          <SectionLabel>How it works</SectionLabel>
+          <h2 className="max-w-3xl display-2 font-semibold text-text">
+            Grant <span className="text-text-faint">→</span> Spend{" "}
+            <span className="text-text-faint">→</span> Enforce
+          </h2>
+
+          <div className="mt-12 grid gap-px overflow-hidden rounded-lg border rule sm:grid-cols-3">
+            {[
+              {
+                n: "01",
+                tag: "Grant",
+                line: "One MetaMask ERC-7715 Advanced Permission. A periodic USDC allowance, capped per period.",
+              },
+              {
+                n: "02",
+                tag: "Spend",
+                line: "The agent sips USDC per request. Each commitment is a redelegation to the seller; vouchers batch into one tx.",
+              },
+              {
+                n: "03",
+                tag: "Enforce",
+                line: "The ERC20PeriodTransferEnforcer reverts the over-cap draw. disableDelegation revokes mid-stream.",
+              },
+            ].map((s) => (
+              <div key={s.n} className="bg-ink-2 p-6 sm:p-8">
+                <span className="font-mono text-xs text-amber">{s.n}</span>
+                <h3 className="mt-3 text-lg font-medium text-text">{s.tag}</h3>
+                <p className="mt-2 text-sm leading-relaxed text-text-dim">
+                  {s.line}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── ON-CHAIN ENFORCEMENT, OFF-CHAIN DELIVERY ─────────────────────── */}
+      <section className="border-t rule">
+        <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
+          <SectionLabel>The premise</SectionLabel>
+          <h2 className="max-w-3xl display-3 font-semibold text-text">
+            Isn&apos;t it supposed to be fully on-chain?
+          </h2>
+          <div className="mt-8 grid gap-10 sm:grid-cols-2">
+            <div>
+              <p className="font-mono text-xs uppercase tracking-wider text-amber">
+                on-chain
+              </p>
+              <p className="mt-3 prose-measure text-text-dim">
+                Money, caps, and revocation. The{" "}
+                <span className="font-mono text-text">
+                  ERC20PeriodTransferEnforcer
+                </span>{" "}
+                reverts any draw past the cap.{" "}
+                <span className="font-mono text-text">disableDelegation</span>{" "}
+                cancels the session. The buyer&apos;s funds never leave their
+                account until redemption. No intermediary underwrites either
+                side.
+              </p>
+            </div>
+            <div>
+              <p className="font-mono text-xs uppercase tracking-wider text-text-faint">
+                off-chain
+              </p>
+              <p className="mt-3 prose-measure text-text-dim">
+                The resource server. HTTP and AI inference are off-chain by
+                necessity. sip402 binds the payment to the delivery without
+                asking you to trust the server with custody or with the meter.
+                The chain is the arbiter of value.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── PROOF ────────────────────────────────────────────────────────── */}
+      <section className="border-t rule">
+        <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
+          <SectionLabel>Proven on-chain</SectionLabel>
+          <h2 className="max-w-3xl display-3 font-semibold text-text">
+            Every claim is a real transaction.
+          </h2>
+          <p className="mt-4 prose-measure text-text-dim">
+            Credibility comes from <span className="text-text">here is the tx</span>,
+            not from adjectives. Each row links to Basescan.
+          </p>
+
+          <div className="mt-10 grid gap-10 lg:grid-cols-2">
+            <div>
+              <p className="mb-4 font-mono text-xs uppercase tracking-wider text-text-faint">
+                Base Sepolia
+              </p>
+              <div className="rounded-lg border rule bg-ink px-5">
+                {testnetProof.map((p) => (
+                  <ProofRow key={p.label} {...p} />
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="mb-4 font-mono text-xs uppercase tracking-wider text-text-faint">
+                Base mainnet
+              </p>
+              <div className="rounded-lg border rule bg-ink px-5">
+                <ProofRow
+                  label="1Shot gasless redemption · gas paid in USDC"
+                  hash="0x26a4…40e9"
+                  href={`${MAINNET}/${MAINNET_1SHOT}`}
+                />
+                <ProofRow
+                  label="Real Venice inference · per-token draws"
+                  hash="0x26a4…40e9"
+                  href={`${MAINNET}/${MAINNET_1SHOT}`}
+                />
+              </div>
+              <p className="mt-4 prose-measure text-sm leading-relaxed text-text-faint">
+                Testnet uses direct redeemDelegations (no bundler). The 1Shot
+                relayer and Venice are mainnet, wired and runnable, exercised in
+                the live demo.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── BUILT ON ─────────────────────────────────────────────────────── */}
+      <section className="border-t rule">
+        <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
+          <SectionLabel>Built on</SectionLabel>
+          <div className="grid gap-10 lg:grid-cols-[1fr_1fr]">
+            <div className="space-y-5">
+              {[
+                {
+                  k: "MetaMask Smart Accounts Kit",
+                  v: "ERC-7715 advanced permissions · ERC-7710 redelegation",
+                },
+                {
+                  k: "1Shot Permissionless Relayer",
+                  v: "EIP-7702 · gas paid in USDC · webhooks",
+                },
+                {
+                  k: "Venice AI",
+                  v: "x402-metered inference behind an OpenAI-compatible gateway",
+                },
+              ].map((s) => (
+                <div key={s.k} className="border-b border-line-soft pb-5 last:border-0">
+                  <p className="text-sm font-medium text-text">{s.k}</p>
+                  <p className="mt-1 font-mono text-xs text-text-faint">{s.v}</p>
+                </div>
+              ))}
+            </div>
+            <div>
+              <p className="mb-4 font-mono text-xs uppercase tracking-wider text-text-faint">
+                npm packages
+              </p>
+              <div className="rounded-lg border rule bg-ink px-5">
+                {[
+                  { k: "@sip402/core", v: "chain config · meter · settler" },
+                  { k: "@sip402/client", v: "openSession · createCommitment · revoke" },
+                  { k: "@sip402/server", v: "verify · accumulate · batch-redeem" },
+                  { k: "@sip402/splitter", v: "reference seller · streaming draws" },
+                ].map((p) => (
+                  <a
+                    key={p.k}
+                    href={`https://www.npmjs.com/package/${p.k}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="group flex items-center justify-between gap-4 border-b border-line-soft py-3 transition-colors last:border-0"
+                  >
+                    <span className="font-mono text-sm text-text-dim transition-colors group-hover:text-amber">
+                      {p.k}
+                    </span>
+                    <span className="hidden font-mono text-xs text-text-faint sm:block">
+                      {p.v}
+                    </span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-16 flex flex-wrap items-center gap-4">
+            <Link
+              href="/dashboard"
+              className="rounded-md border border-amber bg-amber px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-amber-deep"
+            >
+              Launch the demo
+            </Link>
+            <a
+              href="https://github.com/RomarioKavin1/sip402"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-md border rule px-5 py-2.5 text-sm font-medium text-text transition-colors hover:bg-ink-2"
+            >
+              View on GitHub ↗
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {/* ── FOOTER ───────────────────────────────────────────────────────── */}
+      <footer className="border-t rule">
+        <div className="mx-auto flex max-w-6xl flex-col gap-4 px-5 py-10 sm:flex-row sm:items-center sm:justify-between sm:px-8">
+          <div>
+            <p className="font-mono text-sm font-bold text-text">
+              sip<span className="text-amber">402</span>
+            </p>
+            <p className="mt-1 text-xs text-text-faint">
+              Session-Initiated Payments. Open a tab, pay by the sip.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-5 font-mono text-xs text-text-faint">
+            <Link href="/docs" className="transition-colors hover:text-text">
+              Docs
+            </Link>
+            <Link href="/dashboard" className="transition-colors hover:text-text">
+              Demo
+            </Link>
+            <a
+              href="https://github.com/RomarioKavin1/sip402"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="transition-colors hover:text-text"
+            >
+              GitHub ↗
+            </a>
+            <a
+              href="https://www.npmjs.com/package/@sip402/core"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="transition-colors hover:text-text"
+            >
+              npm ↗
+            </a>
+          </div>
+        </div>
+      </footer>
     </main>
   );
 }

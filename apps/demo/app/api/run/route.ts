@@ -341,8 +341,24 @@ async function runTestnetGrant(): Promise<Response> {
     ...(from ? { from } : {}),
   });
 
-  // The seller redeems the open redelegation on-chain (pays gas, receives USDC).
-  const settler = createDirectRedeemSettler({ delegateAccount: sellerAccount });
+  // The session account IS the delegate of the MetaMask-granted permission, so it
+  // redeems the granted context directly (single hop, proven rail-proof pattern).
+  // It pays gas, so fund it a little ETH from the owner first.
+  const settler = createDirectRedeemSettler({ delegateAccount: sessionAccount });
+  {
+    const { createPublicClient, createWalletClient, http, parseEther } = await import("viem");
+    const { baseSepolia } = await import("viem/chains");
+    const { DEFAULT_RPC_URL } = await import("@sip402/core");
+    const pub = createPublicClient({ chain: baseSepolia, transport: http(DEFAULT_RPC_URL) });
+    const bal = await pub.getBalance({ address: sessionAccount.address });
+    if (bal < parseEther("0.001")) {
+      const owner = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
+      const ownerWallet = createWalletClient({ account: owner, chain: baseSepolia, transport: http(DEFAULT_RPC_URL) });
+      const h = await ownerWallet.sendTransaction({ to: sessionAccount.address, value: parseEther("0.004") });
+      await pub.waitForTransactionReceipt({ hash: h });
+      pushEvent({ type: "status", payload: { msg: `Funded session ${sessionAccount.address} for gas` } });
+    }
+  }
 
   // If the granting smart account is counterfactual (not yet deployed), the
   // granted chain's `dependencies` deploy it. Land them once, from the seller,
@@ -405,19 +421,12 @@ async function runTestnetGrant(): Promise<Response> {
         payload: { msg: `Draw #${drawCount + 1}: redeeming $${(Number(atoms) / 1e6).toFixed(4)} from granted budget...` },
       });
 
-      // 1. Build + sign the open redelegation session → seller for this amount.
-      const payload = await provider({
-        scheme: "exact",
-        network: NETWORK,
-        asset: USDC,
-        amount: atoms.toString(),
-        payTo: sellerAddress,
-        maxTimeoutSeconds: 60,
-      });
-
-      // 2. Seller redeems the returned permissionContext on-chain.
+      // The session is the grant's delegate — redeem the MetaMask-granted
+      // permission context directly, executing a USDC transfer to the seller
+      // drawn from the granting account within the granted periodic cap.
+      void provider; // (open-redelegation provider unused in the direct-redeem path)
       const result = await settler.settle({
-        signedDelegation: payload.permissionContext,
+        signedDelegation: parentContext,
         payTo: sellerAddress,
         atoms,
       });
@@ -446,6 +455,7 @@ async function runTestnetGrant(): Promise<Response> {
     } catch (err) {
       // Cap reached (or any redemption revert) → dry-tab.
       const msg = err instanceof Error ? err.message : String(err);
+      console.error("[drawOne] redemption failed:", err);
       pushEvent({
         type: "status",
         agent: "writer",
@@ -461,7 +471,9 @@ async function runTestnetGrant(): Promise<Response> {
       for await (const chunk of up.chatStream({ model: "local", messages: [] })) {
         pushEvent({ type: "agent_text", agent: "writer", payload: { text: chunk.text } });
         state.writerText += chunk.text;
-        accrued += tokenCostAtoms(chunk.tokens);
+        // Demo retail price per delivered token (atoms). Tuned so the localUpstream
+        // text accrues ~$0.05 every ~2 passes → several visible draws within MAX_DRAWS.
+        accrued += BigInt(chunk.tokens) * 55n;
 
         while (!capped && accrued >= DRAW_ATOMS) {
           accrued -= DRAW_ATOMS;
