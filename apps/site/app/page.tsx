@@ -117,6 +117,24 @@ export default function Home() {
             <PrimaryBtn href="/docs#run-the-demo">Run the demo</PrimaryBtn>
             <GhostBtn href="/docs">Read the docs</GhostBtn>
           </div>
+          <div className="reveal mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-[14px]" style={{ animationDelay: "260ms" }}>
+            <a
+              href="https://www.youtube.com/watch?v=Qz2_zNbeceo"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 font-bold text-ink transition-colors hover:text-primary"
+            >
+              <span aria-hidden>▶</span> Watch the demo
+            </a>
+            <a
+              href="https://www.youtube.com/watch?v=Fv4UGc-FGMw"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 font-bold text-ink transition-colors hover:text-primary"
+            >
+              <span aria-hidden>▶</span> Pitch video
+            </a>
+          </div>
           <div
             className="reveal mt-10 flex items-baseline gap-3 border-t border-hairline-soft pt-6"
             style={{ animationDelay: "300ms" }}
