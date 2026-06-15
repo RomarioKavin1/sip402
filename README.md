@@ -59,6 +59,41 @@ The same binding runs on two networks, and the proof counts differ on purpose. *
 
 Testnet uses direct `redeemDelegations` (no bundler); mainnet settles through the 1Shot relayer (gas in USDC, no ETH float).
 
+## For judges — Smart Accounts Kit usage (code map)
+
+Every judged capability maps to a direct line in source. Each link opens the exact implementation on `main`.
+
+### MetaMask Smart Accounts Kit
+
+| Capability | Where it lives |
+|---|---|
+| **Advanced Permissions — request** (ERC-7715 `wallet_requestExecutionPermissions`) | [`apps/demo/app/page.tsx#L357`](https://github.com/RomarioKavin1/sip402/blob/main/apps/demo/app/page.tsx#L357) — `requestExecutionPermissions([...])` for an `erc20-token-periodic` grant |
+| **Advanced Permissions — redemption** | [`packages/core/src/settle.ts#L181`](https://github.com/RomarioKavin1/sip402/blob/main/packages/core/src/settle.ts#L181) (direct `redeemDelegations`) · [`#L435`](https://github.com/RomarioKavin1/sip402/blob/main/packages/core/src/settle.ts#L435) (gasless batch redeem of the granted permission context) |
+| **Delegation — creation** (sign `Erc20PeriodTransfer` delegation) | [`packages/client/src/session.ts#L80`](https://github.com/RomarioKavin1/sip402/blob/main/packages/client/src/session.ts#L80) — `openSession`; scope at [`#L157`](https://github.com/RomarioKavin1/sip402/blob/main/packages/client/src/session.ts#L157) |
+| **Delegation — redemption** (batch `redeemDelegations`) | [`packages/server/src/accumulator.ts#L222`](https://github.com/RomarioKavin1/sip402/blob/main/packages/server/src/accumulator.ts#L222) — N commitments in ONE tx; verify-by-simulation at [`verify.ts#L101`](https://github.com/RomarioKavin1/sip402/blob/main/packages/server/src/verify.ts#L101) |
+| **Redelegation** (ERC-7710 + Advanced Permissions) | [`packages/client/src/redelegate.ts#L34`](https://github.com/RomarioKavin1/sip402/blob/main/packages/client/src/redelegate.ts#L34) — `redelegateSession` (A2A sub-budget); the **payment commitment itself is a redelegation** at [`commitment.ts#L64`](https://github.com/RomarioKavin1/sip402/blob/main/packages/client/src/commitment.ts#L64) |
+| **x402 — server implementation** | [`packages/server/src/middleware.ts#L69`](https://github.com/RomarioKavin1/sip402/blob/main/packages/server/src/middleware.ts#L69) — `x402BatchSettlement` (Hono `402` transport, base64-JSON headers) |
+| **x402 — ERC-7710 asset-transfer method** | [`packages/client/src/session.ts#L157`](https://github.com/RomarioKavin1/sip402/blob/main/packages/client/src/session.ts#L157) — `ScopeType.Erc20PeriodTransfer`; transfer execution built at [`settle.ts#L118`](https://github.com/RomarioKavin1/sip402/blob/main/packages/core/src/settle.ts#L118) |
+
+### 1Shot API
+
+| Capability | Where it lives |
+|---|---|
+| **Permissionless relayer client** (`relayer_estimate7710Transaction` / `relayer_send7710Transaction`) | [`packages/core/src/oneshot.ts#L285`](https://github.com/RomarioKavin1/sip402/blob/main/packages/core/src/oneshot.ts#L285) (`estimate7710Transaction`) · [`#L297`](https://github.com/RomarioKavin1/sip402/blob/main/packages/core/src/oneshot.ts#L297) (`send7710Transaction`) |
+| **Gasless settler** (EIP-7702, gas in USDC) | [`packages/core/src/settle.ts#L267`](https://github.com/RomarioKavin1/sip402/blob/main/packages/core/src/settle.ts#L267) — `createOneShotSettler` |
+| **Mainnet proof** | [`0x26a4…40e9`](https://basescan.org/tx/0x26a44ffedefb113e6a6c1aa266985076684dea9faaea097f92e4f3e1731940e9) — relayed `redeemDelegations`, gas paid in USDC |
+
+### Venice AI
+
+| Capability | Where it lives |
+|---|---|
+| **Venice inference, metered per-token** | [`packages/splitter/src/upstream.ts#L53`](https://github.com/RomarioKavin1/sip402/blob/main/packages/splitter/src/upstream.ts#L53) — `veniceUpstream` (x402-metered streaming); gateway at [`gateway.ts`](https://github.com/RomarioKavin1/sip402/blob/main/packages/splitter/src/gateway.ts) |
+| **Mainnet proof** | [`0x2557…43e9`](https://basescan.org/tx/0x2557becd49e3611b92ae089eb00d867672fcba4b61e2abfcbb6b98c010bc43e9) — paid draws against live Venice inference |
+
+### Feedback track
+
+Honest builder feedback on the Smart Accounts Kit, 1Shot, Venice AI, and Base — including the concrete friction points we hit and how we worked around them — is in **[`FEEDBACK.md`](./FEEDBACK.md)**.
+
 ## Packages
 
 Four building blocks, all **published to npm** (MIT). They split cleanly along the
