@@ -6,11 +6,12 @@
 //   • agent_text   — a streamed delivery chunk → the agent's console panel
 //   • status       — a human-readable log line ("Cascade complete" ends the run)
 //   • tree_update  — the delegation tree opened/changed
-// `agent` scopes the event to a lane (writer / illustrator / researcher).
+// `agent` scopes the event to the active delivery lane: "writer" on testnet,
+// "researcher" on mainnet (a single agent either way).
 
 export interface BusEvent {
   type: "settlement" | "agent_text" | "status" | "tree_update";
-  agent?: "writer" | "illustrator" | "researcher";
+  agent?: "writer" | "researcher";
   payload: unknown;
 }
 

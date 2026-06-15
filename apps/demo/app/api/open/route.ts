@@ -123,7 +123,7 @@ export async function POST() {
     });
 
     // capUsd here is the per-agent display cap; the real on-chain cap is the
-    // 2-USDC/day periodic permission the user grants in MetaMask.
+    // 0.30-USDC/day periodic permission the user grants in MetaMask.
     return NextResponse.json({
       network: "base-sepolia",
       sessionAddress: sessionAccount.address,

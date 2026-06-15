@@ -19,7 +19,7 @@ import { useState, useEffect, useRef, useCallback, Fragment } from "react";
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface SettlementEntry {
-  agent: "writer" | "illustrator" | "researcher";
+  agent: "writer" | "researcher";
   amountAtoms: bigint;
   txHash?: string;
   count?: number; // commitments batched into this one tx
@@ -80,7 +80,6 @@ export default function DemoPage() {
   const [receipts, setReceipts] = useState<SettlementEntry[]>([]);
   const [totalDrawn, setTotalDrawn] = useState<bigint>(0n);
   const [writer, setWriter] = useState<AgentState>({ drawn: 0n, text: "", revoked: false });
-  const [illustrator, setIllustrator] = useState<AgentState>({ drawn: 0n, text: "", revoked: false });
   const [researcher, setResearcher] = useState<AgentState>({ drawn: 0n, text: "", revoked: false });
   const [statusLog, setStatusLog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -96,7 +95,6 @@ export default function DemoPage() {
   });
   const evtSourceRef = useRef<EventSource | null>(null);
   const writerTextRef = useRef<HTMLDivElement>(null);
-  const illustratorTextRef = useRef<HTMLDivElement>(null);
   const researcherTextRef = useRef<HTMLDivElement>(null);
 
   const [tickerGlow, setTickerGlow] = useState(false);
@@ -129,7 +127,7 @@ export default function DemoPage() {
       try {
         const evt = JSON.parse(e.data) as {
           type: string;
-          agent?: "writer" | "illustrator" | "researcher";
+          agent?: "writer" | "researcher";
           payload?: Record<string, unknown>;
         };
         if (evt.type === "ping") return;
@@ -166,7 +164,6 @@ export default function DemoPage() {
             setTickerGlow(true);
             setTimeout(() => setTickerGlow(false), 600);
             if (agent === "writer") setWriter((p) => ({ ...p, drawn: p.drawn + settledAtoms }));
-            else if (agent === "illustrator") setIllustrator((p) => ({ ...p, drawn: p.drawn + settledAtoms }));
             else if (agent === "researcher") setResearcher((p) => ({ ...p, drawn: p.drawn + settledAtoms }));
           }
         }
@@ -178,11 +175,6 @@ export default function DemoPage() {
             setWriter((p) => ({ ...p, text: p.text + text }));
             requestAnimationFrame(() => {
               if (writerTextRef.current) writerTextRef.current.scrollTop = writerTextRef.current.scrollHeight;
-            });
-          } else if (agent === "illustrator") {
-            setIllustrator((p) => ({ ...p, text: p.text + text }));
-            requestAnimationFrame(() => {
-              if (illustratorTextRef.current) illustratorTextRef.current.scrollTop = illustratorTextRef.current.scrollHeight;
             });
           } else if (agent === "researcher") {
             setResearcher((p) => ({ ...p, text: p.text + text }));
@@ -198,10 +190,8 @@ export default function DemoPage() {
           // "Cascade complete" is the agreed end-of-run sentinel (emitted by every
           // run path in /api/run, including error exits) → advance to the "done" UI.
           if (msg === "Cascade complete") setPhase("done");
-          if (evt.agent && msg.includes("revoked")) {
-            const agent = evt.agent;
-            if (agent === "writer") setWriter((p) => ({ ...p, revoked: true }));
-            else if (agent === "illustrator") setIllustrator((p) => ({ ...p, revoked: true }));
+          if (evt.agent === "writer" && msg.includes("revoked")) {
+            setWriter((p) => ({ ...p, revoked: true }));
           }
         }
       } catch { /* ignore parse errors */ }
@@ -275,7 +265,6 @@ export default function DemoPage() {
     setPhase("open");
     setGranted(false);
     setWriter({ drawn: 0n, text: "", revoked: false });
-    setIllustrator({ drawn: 0n, text: "", revoked: false });
     setResearcher({ drawn: 0n, text: "", revoked: false });
     setReceipts([]);
     setTotalDrawn(0n);
@@ -384,17 +373,13 @@ export default function DemoPage() {
     }
   }
 
-  async function handleRevoke(agent: "writer" | "illustrator") {
-    addStatus(`Revoking ${agent}...`);
+  async function handleRevoke() {
+    addStatus("Revoking agent — disabling the granted budget...");
     try {
-      const res = await fetch("/api/revoke", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent }),
-      });
-      const data = (await res.json()) as { ok?: boolean; txHash?: string; error?: string };
+      const res = await fetch("/api/revoke", { method: "POST" });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
       if (!res.ok) throw new Error(data.error ?? "revoke failed");
-      addStatus(`${agent} revoked — tx ${data.txHash ?? "unknown"}`);
+      addStatus("Agent revoked — no further draws can be redeemed");
     } catch (err) {
       addStatus(`revoke error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -663,7 +648,7 @@ export default function DemoPage() {
                   </span>
                 ) : (
                   <button
-                    onClick={() => handleRevoke("writer")}
+                    onClick={handleRevoke}
                     disabled={writer.revoked || phase !== "running"}
                     className="rounded-pill border border-ruby/60 px-3 py-1.5 text-[13px] text-ruby transition-colors hover:bg-ruby/10 disabled:cursor-not-allowed disabled:border-hairline disabled:text-ink-mute"
                   >

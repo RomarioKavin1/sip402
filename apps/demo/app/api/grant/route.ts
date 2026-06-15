@@ -17,9 +17,10 @@ import { pushEvent } from "../../../lib/bus";
  *   - from?: Hex               — the granting smart account (root delegator).
  *   - delegationManager: Hex   — the manager the chain must be redeemed through.
  *
- * We persist these so /api/run can build an open redelegation (session → seller)
- * via createx402DelegationProvider and have the seller redeem it on-chain,
- * spending the granted budget as real Base Sepolia USDC transfers.
+ * We persist these so /api/run can redeem the granted context directly — the
+ * session account is the grant's delegate, so it batch-redeems commitments on-chain
+ * (one redeemDelegations tx per batch), spending the granted budget as real Base
+ * Sepolia USDC transfers.
  */
 export async function POST(req: Request) {
   let body: {
@@ -75,7 +76,7 @@ export async function POST(req: Request) {
   pushEvent({
     type: "status",
     payload: {
-      msg: "Permission granted via MetaMask — 2 USDC/day cap stored",
+      msg: "Permission granted via MetaMask — 0.30 USDC/day cap stored",
       sessionAddress: state.sessionAddress,
       from: state.grantFrom,
     },
