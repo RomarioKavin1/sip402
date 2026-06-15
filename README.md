@@ -2,6 +2,8 @@
 
 **Session-Initiated Payments — open a tab, pay by the sip.**
 
+**[Live site ↗](https://sip402.vercel.app)** · **[Docs ↗](https://sip402.vercel.app/docs)** · **[npm](https://www.npmjs.com/package/@sip402/core)** · [SPEC](./SPEC.md)
+
 sip402 turns one MetaMask permission into a *standing, revocable payment session*. An agent opens a tab once, then "sips" small USDC draws against it as a paid AI stream is delivered — batched on-chain, capped by ERC-7710 caveats, and cancellable mid-sentence.
 
 It is the **first capital-backed, ERC-7710 EVM binding of x402's `batch-settlement` scheme** — the on-chain, self-custodial counterpart of the scheme whose only shipped binding (`cloudflare:402`) is credit-backed fiat. The payment commitment *is* an ERC-7710 redelegation to the seller; the seller accumulates commitments and redeems them in batches through the MetaMask Delegation Manager. See [`SPEC.md`](./SPEC.md) for the full binding specification. **x402 prices the request; sip402 prices the delivery.**
