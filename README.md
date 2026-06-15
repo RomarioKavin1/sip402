@@ -40,7 +40,7 @@ The same binding runs on two networks, and the proof counts differ on purpose. *
 | Mechanism | Evidence |
 |---|---|
 | Periodic delegation, cumulative draws, **over-cap revert** | rail-proof: draws [`0xca04…`](https://sepolia.basescan.org/tx/0xca047bebde0805b071a3b2eb7d245d61c56ec77550e03635434c6dc20dd8b73b) / [`0xa398…`](https://sepolia.basescan.org/tx/0xa39862f943deeb1af75002b2985362aeaa5fcc0dbddc533b34321cbc385ec47d), over-cap reverted `0xc478…` |
-| **Commitment = redelegation to seller**, A2A **depth-4 chain** redeemed, revoke | binding-proof: A2A [`0xcc1b…`](https://sepolia.basescan.org/tx/0xcc1ba35facadf92945c01b31da6a9574ceec36a27cddfd29bf36989e9356b153), revoke `0xe355…` |
+| **Commitment = redelegation to seller**, A2A **depth-4 chain** redeemed | binding-proof: A2A [`0xcc1b…`](https://sepolia.basescan.org/tx/0xcc1ba35facadf92945c01b31da6a9574ceec36a27cddfd29bf36989e9356b153) (revoke proven separately, below) |
 | **Batch redemption — 3 commitments in ONE tx** | server-proof: [`0x3b95…`](https://sepolia.basescan.org/tx/0x3b9583c3825612ef2a0bcc5ddbd75efc0ae73c3c897414700ec317a1bb41d9fa) (3 transfers, 1 tx) |
 | **Streaming per-batch draws** (live ticker) → dry-tab at cap | splitter-proof: 4 draws [`0x5ba8…`](https://sepolia.basescan.org/tx/0x5ba8a54a8cd397cd6522d4dd70b4f690fa99fc7d30d11829bccd8711966a931c) → $1.00 → revert |
 | Demo: cascade → draws → **revoke halts an agent mid-run** | demo: revoke [`0x9c2c…`](https://sepolia.basescan.org/tx/0x9c2ccef0bceec5f82ca8d3ddf0d9a461b57b147ef9860285de874dcc1361a10f) |

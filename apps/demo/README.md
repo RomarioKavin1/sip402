@@ -18,11 +18,14 @@ ever holds the funds.
 - **MetaMask** with Advanced Permissions (ERC-7715) support. The grant uses
   `wallet_requestExecutionPermissions`; use a build of MetaMask that supports it
   (MetaMask Flask, or a release with the Delegation/Advanced Permissions feature).
-- A **throwaway private key** funded on **Base Sepolia** with:
-  - a little **Sepolia ETH** for gas — <https://www.alchemy.com/faucets/base-sepolia>
-  - some **test USDC** at `0x036CbD53842c5426634e7929541eC2318f3dCF7e` (Circle's
-    Base Sepolia faucet: <https://faucet.circle.com>).
-  This key funds the session and seller server-side. Never use a key with real funds.
+- A **throwaway private key** funded on **Base Sepolia** with **Sepolia ETH only**
+  (it pays gas, not USDC). Budget **~0.01 ETH per run** — each _Open_ gas-funds a
+  fresh session + seller EOA with 0.008 ETH; **~0.03 ETH** gives you a few runs.
+  Faucet: <https://www.alchemy.com/faucets/base-sepolia>. This key funds the session
+  and seller server-side. Never use a key with real funds.
+- The **MetaMask account you sign the grant with** needs **test USDC** — the draws
+  pull from *its* granted budget, not the throwaway key. USDC at
+  `0x036CbD53842c5426634e7929541eC2318f3dCF7e` (Circle faucet: <https://faucet.circle.com>).
 
 ---
 
