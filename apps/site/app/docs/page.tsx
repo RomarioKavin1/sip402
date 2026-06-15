@@ -80,10 +80,12 @@ export default function DocsPage() {
       {/* header */}
       <div className="max-w-3xl">
         <Eyebrow>Documentation</Eyebrow>
-        <h1 className="mt-3 t-display-xl text-ink">sip402: open a tab, pay by the sip.</h1>
+        <h1 className="mt-3 t-display-xl text-ink">x402&apos;s stream is centralised. sip402 decentralises it.</h1>
         <p className="mt-5 text-[18px] font-light leading-relaxed text-ink-secondary">
-          The first on-chain, capital-backed binding of x402&apos;s <Code>batch-settlement</Code> scheme. One
-          MetaMask permission turns into a standing, revocable USDC session the chain enforces. No custodian.
+          x402&apos;s <Code>batch-settlement</Code> scheme describes streaming, session-based payments — but its
+          only binding, <Code>cloudflare:402</Code>, is centralised (credit-backed, off-chain). sip402 is the
+          first <span className="font-bold text-ink">on-chain, self-custodial</span> binding: one MetaMask
+          permission opens a metered, revocable USDC session the chain itself caps and revokes. No custodian.
         </p>
       </div>
 
@@ -110,17 +112,21 @@ export default function DocsPage() {
         <article className="min-w-0 space-y-16">
           {/* OVERVIEW */}
           <section>
-            <H2 id="overview" eyebrow="Overview">What sip402 is</H2>
+            <H2 id="overview" eyebrow="Overview">The problem, and what sip402 is</H2>
             <P>
-              sip402 turns one MetaMask ERC-7715 Advanced Permission into a standing, revocable payment session.
-              An agent opens a tab once, then sips small USDC draws against it as a paid AI stream is delivered —
-              batched on-chain, capped by ERC-7710 caveats, and cancellable mid-sentence.
+              x402 already describes <Code>batch-settlement</Code> — streaming, session-based payments where you
+              pay as a resource is delivered and settle in batches. But the only binding anyone shipped,{" "}
+              <Code>cloudflare:402</Code>, is <span className="font-bold text-ink">centralised</span>: a credit
+              balance the network holds, settled off-chain, with the network as merchant-of-record. You stream now
+              and trust an intermediary to settle later. The trust-minimised, on-chain version was in the spec but
+              never built.
             </P>
             <P>
-              The one idea: <span className="font-bold text-ink">x402 prices the request; sip402 prices the
-              delivery.</span> Money, caps, and revocation are on-chain; the resource server (HTTP and AI
-              inference) is off-chain by necessity. No intermediary ever holds the buyer&apos;s funds — they leave
-              the account only at redemption, bounded by the on-chain caveat.
+              sip402 builds it. One MetaMask ERC-7715 Advanced Permission becomes a standing, revocable session;
+              an agent sips small USDC draws against it as a paid AI stream is delivered — batched on-chain, capped
+              by ERC-7710 caveats, gasless via 1Shot, and cancellable mid-sentence. Money, caps, and revocation are
+              on-chain; no intermediary ever holds the buyer&apos;s funds. <span className="font-bold text-ink">x402
+              prices the request; sip402 prices the delivery.</span>
             </P>
             <div className="mt-6 grid gap-4 sm:grid-cols-3">
               {[

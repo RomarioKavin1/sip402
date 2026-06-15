@@ -96,20 +96,22 @@ export default function Home() {
       <section className="mx-auto grid max-w-[1280px] items-center gap-12 px-5 pb-20 pt-16 sm:px-8 sm:pb-28 sm:pt-20 lg:grid-cols-[1.05fr_0.95fr]">
         <div>
           <div className="reveal" style={{ animationDelay: "0ms" }}>
-            <Label>x402 binding · batch-settlement · ERC-7710</Label>
+            <Label>x402 batch-settlement · on-chain &amp; self-custodial</Label>
           </div>
           <h1 className="reveal mt-5 t-display-xxl text-ink" style={{ animationDelay: "70ms" }}>
-            Open a tab.
+            x402&apos;s stream is centralised.
             <br />
-            Pay by the sip.
+            sip402 <span className="text-primary">decentralises</span> it.
           </h1>
           <p
             className="reveal prose-measure mt-6 text-[18px] font-light leading-relaxed text-ink-secondary"
             style={{ animationDelay: "150ms" }}
           >
-            One MetaMask permission opens a metered, revocable USDC session. An agent
-            sips against it as a paid AI stream is delivered. The chain enforces the
-            cap and the revoke. No custodian ever holds the funds.
+            x402 ships a <span className="font-normal text-ink">batch-settlement</span> scheme for streaming,
+            session-based payments — but its only binding,{" "}
+            <span className="font-normal text-ink">cloudflare:402</span>, is centralised: credit-backed,
+            off-chain, network-as-merchant. sip402 is the first on-chain, self-custodial binding — gasless
+            USDC streams the chain itself caps and revokes. No custodian ever holds the funds.
           </p>
           <div className="reveal mt-8 flex flex-wrap items-center gap-3" style={{ animationDelay: "220ms" }}>
             <PrimaryBtn href="/docs#run-the-demo">Run the demo</PrimaryBtn>
@@ -135,10 +137,16 @@ export default function Home() {
       {/* ── THE ONE IDEA ─────────────────────────────────────────────────── */}
       <section className="border-t border-hairline-soft bg-canvas-soft">
         <div className="mx-auto max-w-[1280px] px-5 py-20 sm:px-8 sm:py-24">
-          <Label>The one idea</Label>
+          <Label>The problem</Label>
           <h2 className="mt-3 t-display-xl max-w-3xl text-ink">
-            x402 prices the request. sip402 prices the delivery.
+            The stream existed. The decentralised version didn&apos;t.
           </h2>
+          <p className="prose-measure mt-5 text-[17px] font-light leading-relaxed text-ink-secondary">
+            x402 already describes streaming, session-based payments — pay as a resource is delivered, settle
+            in batches. But the only binding anyone shipped, <span className="font-normal text-ink">cloudflare:402</span>,
+            is centralised: a credit balance held by the network, settled off-chain. The trust-minimised, on-chain
+            version was in the spec but never built. sip402 builds it.
+          </p>
 
           <div className="mt-10 overflow-hidden rounded-[24px] border border-hairline-soft bg-canvas">
             <div className="hidden grid-cols-[140px_1fr_220px] gap-4 border-b border-hairline-soft px-6 py-3.5 text-[12px] font-bold uppercase tracking-[0.04em] text-ink-mute sm:grid">

@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/@sip402/server.svg)](https://www.npmjs.com/package/@sip402/server) · [repo](https://github.com/RomarioKavin1/sip402) · [SPEC](https://github.com/RomarioKavin1/sip402/blob/main/SPEC.md)
 
-The **seller side** of the sip402 x402 `batch-settlement` binding. Verify incoming commitments by **simulation**, **accumulate** them, and **batch-redeem** — N commitments in ONE `redeemDelegations` transaction. Ships with x402 HTTP middleware and a settlement event feed.
+The **seller side** of sip402 — the on-chain, self-custodial binding that decentralises x402's `batch-settlement` (whose only shipped binding, `cloudflare:402`, is centralised, off-chain credit). Verify incoming commitments by **simulation**, **accumulate** them, and **batch-redeem** — N commitments in ONE `redeemDelegations` transaction. Ships with x402 HTTP middleware and a settlement event feed.
 
 ```bash
 npm i @sip402/server

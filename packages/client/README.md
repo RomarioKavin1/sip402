@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/@sip402/client.svg)](https://www.npmjs.com/package/@sip402/client) · [repo](https://github.com/RomarioKavin1/sip402) · [SPEC](https://github.com/RomarioKavin1/sip402/blob/main/SPEC.md)
 
-The **buyer side** of sip402. A buyer opens one capped, periodic payment session, then — for each paid request — issues a **commitment**, which *is* an ERC-7710 redelegation to the seller. The seller batches and redeems those commitments (see [`@sip402/server`](https://www.npmjs.com/package/@sip402/server)). The payment is the delegation.
+The **buyer side** of sip402 — the binding that decentralises x402's centralised payment stream (whose only binding, `cloudflare:402`, is off-chain credit). A buyer opens one capped, periodic payment session, then — for each paid request — issues a **commitment**, which *is* an ERC-7710 redelegation to the seller. The seller batches and redeems those commitments (see [`@sip402/server`](https://www.npmjs.com/package/@sip402/server)). The payment is the delegation.
 
 ```bash
 npm i @sip402/client

@@ -26,7 +26,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "sip402 demo · grant, spend, enforce",
   description:
-    "Local demo of sip402: connect MetaMask, grant one ERC-7715 permission, and watch an agent sip USDC while the chain enforces the cap.",
+    "Local demo of sip402 — the decentralised, on-chain binding of x402's centralised payment stream. Connect MetaMask, grant one ERC-7715 permission, and watch an agent sip USDC while the chain enforces the cap.",
 };
 
 function TopNav() {

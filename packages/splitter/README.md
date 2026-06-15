@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/@sip402/splitter.svg)](https://www.npmjs.com/package/@sip402/splitter) · [repo](https://github.com/RomarioKavin1/sip402) · [SPEC](https://github.com/RomarioKavin1/sip402/blob/main/SPEC.md)
 
-A **reference seller** built on sip402: resell **Venice AI** inference behind an OpenAI-compatible gateway, billed **per token** as a paid stream — draws settle on-chain in batches while the response streams. Shows the full seller loop end to end.
+A **reference seller** built on sip402 — the binding that decentralises x402's centralised payment stream. Resell **Venice AI** inference behind an OpenAI-compatible gateway, billed **per token** as a paid stream — draws settle on-chain in batches while the response streams (no off-chain credit, no custodian). Shows the full seller loop end to end.
 
 ```bash
 npm i @sip402/splitter

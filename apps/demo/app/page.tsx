@@ -525,9 +525,9 @@ export default function DemoPage() {
         </span>
         <h1 className="mt-3 t-display-lg text-ink">Grant. Spend. Enforce.</h1>
         <p className="mt-2 prose-measure text-[15px] leading-relaxed text-ink-secondary">
-          One MetaMask permission opens a metered USDC session. An agent sips
-          against it; the chain enforces the cap and your revoke. Follow the four
-          steps.
+          x402&apos;s payment stream is centralised — this is the decentralised version.
+          One MetaMask permission opens a metered USDC session; an agent sips against it
+          while the chain itself enforces the cap and your revoke. Follow the four steps.
         </p>
       </div>
 

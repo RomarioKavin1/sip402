@@ -22,9 +22,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "sip402 · open a tab, pay by the sip",
+  title: "sip402 · x402's stream, decentralised",
   description:
-    "The first on-chain, capital-backed binding of x402 batch-settlement. One MetaMask permission opens a metered, revocable USDC session the chain enforces. No custodian.",
+    "x402's batch-settlement stream is centralised (cloudflare:402, off-chain credit). sip402 is the first on-chain, self-custodial binding — gasless USDC streams the chain itself caps and revokes. No custodian.",
 };
 
 // Full-width promo strip pointing at the on-chain evidence section of the docs.

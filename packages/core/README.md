@@ -2,7 +2,7 @@
 
 [![npm](https://img.shields.io/npm/v/@sip402/core.svg)](https://www.npmjs.com/package/@sip402/core) · [repo](https://github.com/RomarioKavin1/sip402) · [SPEC](https://github.com/RomarioKavin1/sip402/blob/main/SPEC.md)
 
-The on-chain / settlement half of **sip402** — the capital-backed, ERC-7710 binding of x402's `batch-settlement` scheme. This package holds the pieces both the seller and the demo need: network config, off-chain draw accounting, the **Settler** that redeems commitments, and the **1Shot** gasless-relayer client.
+The on-chain / settlement half of **sip402** — the binding that **decentralises** x402's `batch-settlement`. x402 describes streaming, session-based payments, but its only shipped binding (`cloudflare:402`) is centralised: credit-backed, off-chain, network-as-merchant. This package is the on-chain, self-custodial alternative: network config, off-chain draw accounting, the **Settler** that redeems commitments in batches, and the **1Shot** gasless-relayer client.
 
 ```bash
 npm i @sip402/core

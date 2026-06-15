@@ -1,12 +1,14 @@
 # sip402
 
-**Session-Initiated Payments — open a tab, pay by the sip.**
+**x402's payment stream is centralised. sip402 decentralises it.**
 
-**[Live site ↗](https://sip402.vercel.app)** · **[Docs ↗](https://sip402.vercel.app/docs)** · **[npm](https://www.npmjs.com/package/@sip402/core)** · [SPEC](./SPEC.md)
+**[Live site ↗](https://sip402.vercel.app)** · **[Docs ↗](https://sip402.vercel.app/docs)** · **[npm](https://www.npmjs.com/package/@sip402/core)** · [SPEC](./SPEC.md) · [Feedback](./FEEDBACK.md)
 
-sip402 turns one MetaMask permission into a *standing, revocable payment session*. An agent opens a tab once, then "sips" small USDC draws against it as a paid AI stream is delivered — batched on-chain, capped by ERC-7710 caveats, and cancellable mid-sentence.
+x402 ships a `batch-settlement` scheme for **streaming, session-based payments** — pay as a resource is delivered, settle in batches. But its only real-world binding, **`cloudflare:402`**, is **centralised**: a credit balance held by the network, settled off-chain, with the network as merchant-of-record. You stream now and trust an intermediary to settle later. The trust-minimised, on-chain version was described in the spec but **never shipped**.
 
-It is the **first capital-backed, ERC-7710 EVM binding of x402's `batch-settlement` scheme** — the on-chain, self-custodial counterpart of the scheme whose only shipped binding (`cloudflare:402`) is credit-backed fiat. The payment commitment *is* an ERC-7710 redelegation to the seller; the seller accumulates commitments and redeems them in batches through the MetaMask Delegation Manager. See [`SPEC.md`](./SPEC.md) for the full binding specification. **x402 prices the request; sip402 prices the delivery.**
+**sip402 is that binding** — the first **capital-backed, on-chain, self-custodial** binding of x402's `batch-settlement`. One MetaMask ERC-7715 permission opens a standing, revocable USDC session. The payment commitment *is* an ERC-7710 redelegation to the seller; the seller redeems commitments in **batches** through the MetaMask Delegation Manager; the cap is enforced **on-chain** by an ERC-7710 caveat (over-budget reverts atomically); and settlement is **gasless** via the 1Shot relayer. No custodian, no credit, no trust. See [`SPEC.md`](./SPEC.md) for the full binding specification.
+
+**x402 prices the request; sip402 prices the delivery.**
 
 ## Why
 
