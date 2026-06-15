@@ -42,6 +42,31 @@ const BASE_SEPOLIA_CHAIN_ID = 84532;
 const BASE_SEPOLIA_HEX = "0x14a34";
 const USDC_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
+// Base mainnet (used by the mainnet BATCH rail — a real ERC-7715 grant on mainnet).
+const BASE_MAINNET_CHAIN_ID = 8453;
+const BASE_MAINNET_HEX = "0x2105";
+const USDC_BASE_MAINNET = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+
+// Per-network chain params for the connect + grant flow. The grant cap is 0.30
+// USDC/day on testnet (free) and a smaller 0.15 on mainnet (real money).
+type ChainParams = {
+  chainId: number;
+  chainHex: string;
+  usdc: string;
+  capUsd: string;
+  name: string;
+  rpc: string;
+  explorer: string;
+};
+const TESTNET_CHAIN: ChainParams = {
+  chainId: BASE_SEPOLIA_CHAIN_ID, chainHex: BASE_SEPOLIA_HEX, usdc: USDC_BASE_SEPOLIA,
+  capUsd: "0.3", name: "Base Sepolia", rpc: "https://sepolia.base.org", explorer: "https://sepolia.basescan.org",
+};
+const MAINNET_CHAIN: ChainParams = {
+  chainId: BASE_MAINNET_CHAIN_ID, chainHex: BASE_MAINNET_HEX, usdc: USDC_BASE_MAINNET,
+  capUsd: "0.15", name: "Base", rpc: "https://mainnet.base.org", explorer: "https://basescan.org",
+};
+
 interface Eip1193Provider {
   request: (args: { method: string; params?: unknown[] | object }) => Promise<unknown>;
 }
@@ -88,6 +113,9 @@ export default function DemoPage() {
   const [account, setAccount] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  // On mainnet, pick the rail: "venice" (gasless single-draw inference) or "batch"
+  // (the full ERC-7715 grant → 1Shot batch → cap-revert, settled gaslessly).
+  const [mainnetMode, setMainnetMode] = useState<"venice" | "batch">("venice");
   const [netConfig, setNetConfig] = useState<NetworkConfig>({
     isMainnet: false,
     network: "base-sepolia",
@@ -99,6 +127,12 @@ export default function DemoPage() {
 
   const [tickerGlow, setTickerGlow] = useState(false);
   const [capRevert, setCapRevert] = useState(false);
+
+  // Active chain params + whether this run uses the MetaMask ERC-7715 grant flow.
+  // Grant flow = always on testnet; on mainnet only for the "batch" rail (the
+  // "venice" rail is server-driven and needs no wallet connect/grant).
+  const chain = netConfig.isMainnet ? MAINNET_CHAIN : TESTNET_CHAIN;
+  const grantFlow = !netConfig.isMainnet || mainnetMode === "batch";
 
   const addStatus = useCallback((msg: string) => {
     setStatusLog((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 50));
@@ -209,7 +243,8 @@ export default function DemoPage() {
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
-  // Ensure MetaMask is connected and on Base Sepolia.
+  // Ensure MetaMask is connected and on the active chain (Base Sepolia on testnet,
+  // Base mainnet for the mainnet batch rail).
   async function handleConnect() {
     setError(null);
     if (typeof window === "undefined" || !window.ethereum) {
@@ -225,12 +260,12 @@ export default function DemoPage() {
       if (!acct) throw new Error("no MetaMask account connected");
 
       const currentChain = (await ethereum.request({ method: "eth_chainId" })) as string;
-      if (currentChain?.toLowerCase() !== BASE_SEPOLIA_HEX) {
-        addStatus("Switching MetaMask to Base Sepolia...");
+      if (currentChain?.toLowerCase() !== chain.chainHex) {
+        addStatus(`Switching MetaMask to ${chain.name}...`);
         try {
           await ethereum.request({
             method: "wallet_switchEthereumChain",
-            params: [{ chainId: BASE_SEPOLIA_HEX }],
+            params: [{ chainId: chain.chainHex }],
           });
         } catch (switchErr) {
           if ((switchErr as { code?: number })?.code === 4902) {
@@ -238,11 +273,11 @@ export default function DemoPage() {
               method: "wallet_addEthereumChain",
               params: [
                 {
-                  chainId: BASE_SEPOLIA_HEX,
-                  chainName: "Base Sepolia",
+                  chainId: chain.chainHex,
+                  chainName: chain.name,
                   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-                  rpcUrls: ["https://sepolia.base.org"],
-                  blockExplorerUrls: ["https://sepolia.basescan.org"],
+                  rpcUrls: [chain.rpc],
+                  blockExplorerUrls: [chain.explorer],
                 },
               ],
             });
@@ -251,7 +286,7 @@ export default function DemoPage() {
       }
       setAccount(acct);
       setConnected(true);
-      addStatus(`Connected ${shortAddr(acct)} on Base Sepolia`);
+      addStatus(`Connected ${shortAddr(acct)} on ${chain.name}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -270,17 +305,23 @@ export default function DemoPage() {
     setTotalDrawn(0n);
     addStatus("Opening session...");
     try {
-      const res = await fetch("/api/open", { method: "POST" });
-      const data = (await res.json()) as DemoData & { error?: string };
+      const res = await fetch("/api/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: netConfig.isMainnet ? mainnetMode : "venice" }),
+      });
+      const data = (await res.json()) as DemoData & { error?: string; mode?: string };
       if (!res.ok) throw new Error(data.error ?? "open failed");
       setDemo(data);
 
-      if (data.network === "base") {
+      // Venice rail (mainnet, no grant): the agent is server-funded; ready to Run.
+      if (netConfig.isMainnet && mainnetMode === "venice") {
         addStatus(`Mainnet session ready — agent ${shortAddr(data.agent)}`);
         setGranted(true);
         return;
       }
 
+      // Grant flow (testnet, or the mainnet batch rail): drive the ERC-7715 grant.
       if (!data.sessionAddress) throw new Error("open did not return a session address");
       addStatus(`Session keypair ready — ${shortAddr(data.sessionAddress)}`);
       await requestGrant(data.sessionAddress as `0x${string}`);
@@ -302,29 +343,30 @@ export default function DemoPage() {
 
     addStatus("Requesting ERC-7715 permission (approve in MetaMask)...");
     const { createWalletClient, custom, parseUnits } = await import("viem");
-    const { baseSepolia } = await import("viem/chains");
+    const { base, baseSepolia } = await import("viem/chains");
     const { erc7715ProviderActions } = await import("@metamask/smart-accounts-kit/actions");
+    const viemChain = netConfig.isMainnet ? base : baseSepolia;
 
     const walletClient = createWalletClient({
       account: acct as `0x${string}`,
-      chain: baseSepolia,
+      chain: viemChain,
       transport: custom(ethereum),
     }).extend(erc7715ProviderActions());
 
     const now = Math.floor(Date.now() / 1000);
     const grants = await walletClient.requestExecutionPermissions([
       {
-        chainId: BASE_SEPOLIA_CHAIN_ID,
+        chainId: chain.chainId,
         expiry: now + 7 * 24 * 60 * 60,
         to: sessionAddress,
         permission: {
           type: "erc20-token-periodic",
           data: {
-            tokenAddress: USDC_BASE_SEPOLIA as `0x${string}`,
-            periodAmount: parseUnits("0.3", 6),
+            tokenAddress: chain.usdc as `0x${string}`,
+            periodAmount: parseUnits(chain.capUsd, 6),
             periodDuration: 86400,
             startTime: now,
-            justification: "sip402: let this agent spend up to 0.30 USDC/day",
+            justification: `sip402: let this agent spend up to ${chain.capUsd} USDC/day`,
           },
           isAdjustmentAllowed: true,
         },
@@ -343,14 +385,14 @@ export default function DemoPage() {
         from: grant.from,
         delegationManager: grant.delegationManager,
         dependencies: grant.dependencies,
-        chainId: BASE_SEPOLIA_CHAIN_ID,
+        chainId: chain.chainId,
       }),
     });
     const grantData = (await grantRes.json()) as { ok?: boolean; error?: string };
     if (!grantRes.ok || !grantData.ok) throw new Error(grantData.error ?? "failed to store grant");
 
     setGranted(true);
-    addStatus("Permission stored — agent can now spend within the 0.30 USDC/day cap");
+    addStatus(`Permission stored — agent can now spend within the ${chain.capUsd} USDC/day cap`);
   }
 
   async function handleRun() {
@@ -358,7 +400,7 @@ export default function DemoPage() {
     setError(null);
     setBusy(true);
     setPhase("running");
-    addStatus(netConfig.isMainnet ? "Starting mainnet Venice run..." : "Starting cascade...");
+    addStatus(!grantFlow ? "Starting mainnet Venice run..." : "Starting cascade...");
     try {
       const res = await fetch("/api/run", { method: "POST" });
       if (!res.ok) {
@@ -394,7 +436,7 @@ export default function DemoPage() {
   const totalCapLabel = netConfig.isMainnet ? "$0.15" : "$0.30";
   const basescanTxUrl = (hash: string) => `${netConfig.basescanBase}/${hash}`;
   const capPct = Math.min(100, (Number(totalDrawn) / Number(totalCapAtoms)) * 100);
-  const runLabel = netConfig.isMainnet ? "Run Venice" : "Run the agent";
+  const runLabel = !grantFlow ? "Run Venice" : "Run the agent";
 
   // Guided wizard: 1 connect · 2 open/grant · 3 run · 4 spend/enforce.
   // Step is DERIVED from real state (not a counter) so it always reflects what
@@ -404,7 +446,7 @@ export default function DemoPage() {
   //   3 once granted but still in the "open" phase (ready to Run),
   //   4 once the run has started (running / done = spend & enforce).
   const wizardStep: 1 | 2 | 3 | 4 =
-    !netConfig.isMainnet && !connected
+    grantFlow && !connected
       ? 1
       : !granted
       ? 2
@@ -412,21 +454,23 @@ export default function DemoPage() {
       ? 3
       : 4;
 
-  const steps = netConfig.isMainnet
+  // The grant flow (testnet, or the mainnet batch rail) has a Connect step; the
+  // Venice rail is server-driven and starts at Open.
+  const steps = grantFlow
     ? [
-        { k: "open", label: "Open session" },
-        { k: "run", label: "Run" },
-        { k: "enforce", label: "Enforce" },
-      ]
-    : [
         { k: "connect", label: "Connect wallet" },
         { k: "open", label: "Open tab" },
         { k: "run", label: "Run" },
         { k: "enforce", label: "Enforce" },
+      ]
+    : [
+        { k: "open", label: "Open session" },
+        { k: "run", label: "Run" },
+        { k: "enforce", label: "Enforce" },
       ];
-  // Map the 1–4 wizardStep onto the steps array. Mainnet drops the connect step,
-  // so its indices are shifted down by one (offset -2 vs. testnet's -1).
-  const activeIndex = netConfig.isMainnet ? wizardStep - 2 : wizardStep - 1;
+  // Map the 1–4 wizardStep onto the steps array. The Venice rail drops the connect
+  // step, so its indices shift down by one (offset -2 vs. the grant flow's -1).
+  const activeIndex = grantFlow ? wizardStep - 1 : wizardStep - 2;
   const activeKey = steps[Math.max(0, Math.min(activeIndex, steps.length - 1))]?.k;
 
   // Action-card copy + button for the current step. This is the single guided
@@ -437,17 +481,17 @@ export default function DemoPage() {
     activeKey === "connect"
       ? {
           tag: "Connect your wallet",
-          line: "Connect the MetaMask account you'll grant from. The demo switches it to Base Sepolia for you.",
+          line: `Connect the MetaMask account you'll grant from. The demo switches it to ${chain.name} for you.`,
           button: { label: busy ? "Connecting…" : "Connect MetaMask", onClick: handleConnect, disabled: busy },
         }
       : activeKey === "open"
       ? {
-          tag: netConfig.isMainnet ? "Open the session" : "Open a tab",
-          line: netConfig.isMainnet
+          tag: !grantFlow ? "Open the session" : "Open a tab",
+          line: !grantFlow
             ? "Open a mainnet session. The agent is funded server-side; press to begin metered Venice draws."
-            : "Approve ONE ERC-7715 Advanced Permission in MetaMask. It caps the agent at 0.30 USDC / day, enforced on-chain.",
+            : `Approve ONE ERC-7715 Advanced Permission in MetaMask. It caps the agent at ${chain.capUsd} USDC / day, enforced on-chain${netConfig.isMainnet ? " — settled gaslessly via 1Shot" : ""}.`,
           button: {
-            label: busy ? "Waiting for MetaMask…" : netConfig.isMainnet ? "Open session" : "Open tab",
+            label: busy ? "Waiting for MetaMask…" : !grantFlow ? "Open session" : "Open tab",
             onClick: handleOpen,
             disabled: busy,
           },
@@ -461,7 +505,7 @@ export default function DemoPage() {
       : phase === "running"
       ? {
           tag: "The chain is enforcing",
-          line: "Commitments are settling in batches, one tx per batch. When a batch crosses the 0.30 USDC cap it reverts atomically. Revoke below stops further draws.",
+          line: `Commitments are settling in batches, one tx per batch. When a batch crosses the ${totalCapLabel} cap it reverts atomically. Revoke below stops further draws.`,
         }
       : {
           tag: "Session complete",
@@ -522,6 +566,32 @@ export default function DemoPage() {
         })}
       </ol>
 
+      {/* mainnet rail selector — two real rails (only before a session is opened) */}
+      {netConfig.isMainnet && phase === "idle" && (
+        <div className="mb-6 flex flex-col gap-2 rounded-2xl border border-hairline bg-canvas-soft p-2 sm:flex-row">
+          {([
+            { k: "venice", title: "Gasless Venice", sub: "real inference · single draws" },
+            { k: "batch", title: "Batch settlement", sub: "grant → 1Shot batch → cap-revert" },
+          ] as const).map((m) => {
+            const active = mainnetMode === m.k;
+            return (
+              <button
+                key={m.k}
+                onClick={() => setMainnetMode(m.k)}
+                className={`flex-1 rounded-xl px-4 py-3 text-left transition-colors ${
+                  active ? "bg-canvas shadow-e1" : "hover:bg-canvas/60"
+                }`}
+              >
+                <span className={`block text-[14px] ${active ? "text-ink" : "text-ink-secondary"}`}>
+                  {m.title}
+                </span>
+                <span className="block text-[12px] text-ink-mute">{m.sub}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* action card — the guided focus */}
       <div className="mb-6 rounded-2xl border border-hairline bg-canvas p-6 shadow-e1 sm:p-7">
         <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
@@ -533,7 +603,7 @@ export default function DemoPage() {
             {connected && account && (
               <p className="mt-3 inline-flex items-center gap-2 rounded-pill bg-canvas-soft px-3 py-1 text-[12.5px] text-ink-mute">
                 <span className="h-1.5 w-1.5 rounded-pill bg-primary" />
-                <span className="font-mono">{shortAddr(account)}</span> · Base Sepolia
+                <span className="font-mono">{shortAddr(account)}</span> · {chain.name}
               </p>
             )}
           </div>
@@ -615,14 +685,19 @@ export default function DemoPage() {
           to drop. */}
       {showDelivery && (() => {
         const a = netConfig.isMainnet ? researcher : writer;
-        const name = netConfig.isMainnet ? "researcher" : "agent";
+        const name = !grantFlow ? "researcher" : "agent";
         const textRef = netConfig.isMainnet ? researcherTextRef : writerTextRef;
         const pct = CAP_ATOMS > 0n ? Number((a.drawn * 100n) / CAP_ATOMS) : 0;
-        const revoked = !netConfig.isMainnet && writer.revoked;
+        const revoked = grantFlow && writer.revoked;
+        const deliveryLabel = !grantFlow
+          ? "· real Venice inference"
+          : netConfig.isMainnet
+          ? "· gasless batch settlement (mainnet)"
+          : "· simulated stream (testnet)";
         return (
           <div className="mb-6">
             <h2 className="mb-3 text-[10px] font-bold uppercase tracking-[0.04em] text-ink-mute">
-              Delivery {netConfig.isMainnet ? "· real Venice inference" : "· simulated stream (testnet)"}
+              Delivery {deliveryLabel}
             </h2>
             <div
               className={`rounded-2xl border bg-canvas p-5 shadow-e1 ${revoked ? "border-ruby/50" : "border-hairline"}`}
@@ -642,7 +717,7 @@ export default function DemoPage() {
                     </span>
                   </div>
                 </div>
-                {netConfig.isMainnet ? (
+                {!grantFlow ? (
                   <span className="rounded-pill border border-hairline px-2.5 py-0.5 font-mono text-[12px] text-ink-mute">
                     llama-3.3-70b
                   </span>
@@ -663,7 +738,7 @@ export default function DemoPage() {
                 {a.text || (
                   <span className="text-ink-mute">
                     {phase === "running"
-                      ? netConfig.isMainnet
+                      ? !grantFlow
                         ? "Streaming Venice inference…"
                         : "Streaming delivery…"
                       : "No output yet"}
@@ -690,10 +765,10 @@ export default function DemoPage() {
             {/* delegation tree */}
             <section>
               <h2 className="mb-3 text-[10px] font-bold uppercase tracking-[0.04em] text-ink-mute">
-                {netConfig.isMainnet ? "Session" : "Delegation tree"}
+                {!grantFlow ? "Session" : "Delegation tree"}
               </h2>
               <div className="rounded-2xl border border-hairline bg-canvas p-5 shadow-e1">
-                {netConfig.isMainnet ? (
+                {!grantFlow ? (
                   <div className="space-y-3">
                     <div className="flex items-center gap-3">
                       <span className="text-[12px] text-primary">◆</span>
@@ -713,7 +788,7 @@ export default function DemoPage() {
                       <span className="text-[12px] text-ink-mute">▣</span>
                       <span className="text-[15px] text-ink">MetaMask grant</span>
                       <span className="rounded-pill bg-primary-subdued/40 px-2 py-0.5 text-[11px] text-primary-deep">
-                        0.30 USDC / day
+                        {chain.capUsd} USDC / day{netConfig.isMainnet ? " · gasless" : ""}
                       </span>
                       <span className="tnum ml-auto text-[13px] text-ink-secondary">
                         ${atomsToUsd(totalDrawn)} <span className="text-ink-mute">/ {totalCapLabel}</span>

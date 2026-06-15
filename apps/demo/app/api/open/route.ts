@@ -11,13 +11,51 @@ function ownerPrivateKey(): string {
   return k;
 }
 
-export async function POST() {
+export async function POST(req: Request) {
   try {
+    // Optional { mode: "venice" | "batch" } — selects the mainnet rail. Ignored on testnet.
+    const body = (await req.json().catch(() => ({}))) as { mode?: "venice" | "batch" };
+    const mode = body.mode === "batch" ? "batch" : "venice";
+
     resetState();
 
+    if (IS_MAINNET && mode === "batch") {
+      // ── Mainnet BATCH rail: same MetaMask ERC-7715 grant flow as testnet, but
+      // settled gaslessly through the 1Shot relayer. Generate the SESSION keypair
+      // (the grant's delegate); the client drives a MAINNET grant to it, then
+      // /api/run redelegates → 1Shot target and batch-redeems with cap-revert.
+      state.mainnetMode = "batch";
+      const { generatePrivateKey, privateKeyToAccount } = await import("viem/accounts");
+      const sessionKey = generatePrivateKey();
+      const sessionAccount = privateKeyToAccount(sessionKey);
+      state.sessionPrivateKey = sessionKey;
+      state.sessionAddress = sessionAccount.address;
+
+      pushEvent({
+        type: "status",
+        payload: {
+          msg: "Mainnet batch session — awaiting MetaMask permission grant",
+          network: "base",
+          sessionAddress: sessionAccount.address,
+        },
+      });
+
+      return NextResponse.json({
+        network: "base",
+        mode: "batch",
+        sessionAddress: sessionAccount.address,
+        // Keep treasury/agent/capUsd present so the existing UI types still validate.
+        treasury: sessionAccount.address,
+        agent: sessionAccount.address,
+        capUsd: 0.15,
+        sellerAddress: sessionAccount.address,
+      });
+    }
+
     if (IS_MAINNET) {
-      // ── Mainnet: no treasury deploy needed. The funded EOA is the "agent".
-      // The run route will drive veniceUpstream + createOneShotSettler directly.
+      // ── Mainnet VENICE rail: no treasury deploy needed. The funded EOA is the
+      // "agent". The run route drives veniceUpstream + createOneShotSettler directly.
+      state.mainnetMode = "venice";
       const { privateKeyToAccount } = await import("viem/accounts");
       const ownerKey = ownerPrivateKey() as `0x${string}`;
       const ownerAccount = privateKeyToAccount(ownerKey);
@@ -39,6 +77,7 @@ export async function POST() {
 
       return NextResponse.json({
         network: "base",
+        mode: "venice",
         agent: agentAddress,
         budgetUsd,
         // Provide empty treasury/sellerAddress so the UI's DemoData type still validates

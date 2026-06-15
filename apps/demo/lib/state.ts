@@ -22,6 +22,13 @@ export interface DemoState {
   // Mainnet-specific: agent address (funded EOA) + budget
   mainnetAgent: string | null;
   mainnetBudgetUsd: number;
+  /**
+   * Which mainnet rail to run when SIP_NETWORK=base:
+   *   "venice" — gasless single-draw Venice inference (the default money rail).
+   *   "batch"  — full grant → redelegate → 1Shot batch redeem → cap revert
+   *              (testnet parity on mainnet; uses the ERC-7715 grant flow).
+   */
+  mainnetMode: "venice" | "batch";
   // ── Testnet MetaMask ERC-7715 grant flow ──────────────────────────────────
   /** Server-generated session keypair (the delegate the agent uses). */
   sessionPrivateKey: Hex | null;
@@ -54,6 +61,7 @@ if (!g.__sip402Demo) {
     writerRevoked: false,
     mainnetAgent: null,
     mainnetBudgetUsd: 0,
+    mainnetMode: "venice",
     sessionPrivateKey: null,
     sessionAddress: null,
     grantContext: null,
@@ -77,6 +85,7 @@ export function resetState() {
   s.writerRevoked = false;
   s.mainnetAgent = null;
   s.mainnetBudgetUsd = 0;
+  s.mainnetMode = "venice";
   s.sessionPrivateKey = null;
   s.sessionAddress = null;
   s.grantContext = null;

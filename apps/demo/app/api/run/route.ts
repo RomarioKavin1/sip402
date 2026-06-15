@@ -14,6 +14,17 @@ export async function POST() {
 
   try {
     if (IS_MAINNET) {
+      // Two mainnet rails (selected at /api/open): the gasless single-draw Venice
+      // money rail, or the full grant → redelegate → 1Shot batch → cap-revert.
+      if (state.mainnetMode === "batch") {
+        if (!state.grantContext) {
+          return NextResponse.json(
+            { error: "No mainnet grant — open the batch session and approve the permission first" },
+            { status: 400 },
+          );
+        }
+        return await runMainnetGrantBatch();
+      }
       return await runMainnet();
     } else if (state.grantContext) {
       // Testnet with a real MetaMask ERC-7715 grant: spend the granted budget.
@@ -179,6 +190,172 @@ async function runMainnet(): Promise<Response> {
   pushEvent({ type: "status", payload: { msg: "Cascade complete" } });
 
   return NextResponse.json({ ok: true, draws: drawCount, drawnAtoms: drawnTotal.toString() });
+}
+
+// ── MAINNET (MetaMask grant + 1Shot BATCH): testnet parity, gasless ───────────
+//
+// The buyer granted a real erc20-token-periodic permission on Base MAINNET
+// (0.15 USDC/day) `to` the session account. We:
+//   1. Redelegate the granted context: session → the 1Shot relayer target wallet
+//      (redelegatePermissionContextAction), inheriting the grant's period enforcer.
+//   2. Decode the redelegation chain into delegation objects (decodeDelegations).
+//   3. Accumulate $0.02 commitments and BATCH-redeem them through the 1Shot relayer
+//      (createOneShotSettler.settleBatch) — N draws in ONE gasless redeemDelegations,
+//      gas paid in USDC. When a batch would cross the cap the ERC20PeriodTransferEnforcer
+//      reverts the whole batch (the gasless dry tab). Proven via relayer estimate.
+async function runMainnetGrantBatch(): Promise<Response> {
+  if (!state.grantContext || !state.sessionPrivateKey) {
+    return NextResponse.json(
+      { error: "no mainnet grant — open the batch session and approve the permission first" },
+      { status: 400 },
+    );
+  }
+
+  const { privateKeyToAccount, generatePrivateKey } = await import("viem/accounts");
+  const { createWalletClient, http } = await import("viem");
+  const { base } = await import("viem/chains");
+  const { DEFAULT_RPC_URL, ONESHOT_TARGET_ADDRESS, toRelayerJson } = await import("@sip402/core");
+  const { redelegatePermissionContextAction } = await import("@metamask/smart-accounts-kit/actions");
+  const { getSmartAccountsEnvironment } = await import("@metamask/smart-accounts-kit");
+  const { decodeDelegations } = await import("@metamask/smart-accounts-kit/utils");
+
+  const target = ONESHOT_TARGET_ADDRESS as `0x${string}` | undefined;
+  if (!target) {
+    return NextResponse.json({ error: "1Shot target address unavailable (not mainnet?)" }, { status: 500 });
+  }
+
+  const session = privateKeyToAccount(state.sessionPrivateKey as `0x${string}`);
+  const owner = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
+  const payTo = privateKeyToAccount(generatePrivateKey()).address; // the seller/provider that receives draws
+  const grantContext = state.grantContext as `0x${string}`;
+
+  // [1+2] Redelegate the grant → 1Shot target, then decode the chain to objects.
+  const sessionClient = createWalletClient({ account: session, chain: base, transport: http(DEFAULT_RPC_URL) });
+  const env = getSmartAccountsEnvironment(8453);
+  let relayerChain: Record<string, unknown>[];
+  try {
+    const redel = await redelegatePermissionContextAction(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sessionClient as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { to: target, environment: env, permissionContext: grantContext as any, chainId: 8453 },
+    );
+    relayerChain = decodeDelegations(redel.permissionContext).map(
+      (d) => toRelayerJson(d) as Record<string, unknown>,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    pushEvent({ type: "status", payload: { msg: `Redelegation to 1Shot target failed: ${msg}` } });
+    pushEvent({ type: "status", payload: { msg: "Cascade complete" } });
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
+
+  const settler = createOneShotSettler({ ownerAccount: owner });
+  if (!settler.settleBatch) {
+    return NextResponse.json({ error: "1Shot settler does not support batch settlement" }, { status: 500 });
+  }
+
+  // $0.02 commitments, 3 per batch → ~$0.06 work + ~$0.01 relayer fee = ~$0.07/batch.
+  // With the 0.15 USDC/day grant: batch 1 (~$0.07) + batch 2 (~$0.14) settle; batch 3
+  // would cross 0.15 → the enforcer reverts the whole batch (gasless dry tab).
+  const COMMIT_ATOMS = 20_000n; // $0.02
+  const BATCH_SIZE = 3;
+  const MAX_BATCHES = 4;
+
+  pushEvent({ type: "tree_update", payload: { open: true, mainnet: true } });
+  pushEvent({
+    type: "status",
+    payload: { msg: `Mainnet batch session — redelegated to 1Shot target ${target}; batch-redeeming gaslessly` },
+  });
+
+  const up = localUpstream();
+  const pending: bigint[] = [];
+  let accrued = 0n;
+  let batchCount = 0;
+  let capped = false;
+
+  async function flushBatch(): Promise<boolean> {
+    if (pending.length === 0) return true;
+    const atomsList = pending.splice(0, pending.length);
+    const total = atomsList.reduce((a, b) => a + b, 0n);
+    try {
+      pushEvent({
+        type: "status",
+        agent: "researcher",
+        payload: { msg: `Batch #${batchCount + 1}: gasless redeem of ${atomsList.length} commitments ($${(Number(total) / 1e6).toFixed(2)}) via 1Shot…` },
+      });
+      const result = await settler.settleBatch!({ signedDelegation: relayerChain, payTo, atomsList });
+      batchCount++;
+      state.writerDrawn += total;
+      state.totalDrawn += total;
+      pushEvent({
+        type: "settlement",
+        agent: "researcher",
+        payload: { amountAtoms: total.toString(), txHash: result.txHash, count: result.count, at: Date.now() },
+      });
+      pushEvent({
+        type: "status",
+        agent: "researcher",
+        payload: { msg: `Batch #${batchCount} confirmed (gasless): ${result.count} commitments → ${result.txHash}` },
+      });
+      return true;
+    } catch (err) {
+      // Over-cap → the period enforcer reverts the whole batch (estimate or relay fails).
+      const msg = err instanceof Error ? err.message : String(err);
+      pushEvent({
+        type: "settlement",
+        agent: "researcher",
+        payload: { amountAtoms: "0", attemptedAtoms: total.toString(), count: atomsList.length, reverted: true, at: Date.now() },
+      });
+      pushEvent({
+        type: "status",
+        agent: "researcher",
+        payload: { msg: `Batch #${batchCount + 1} reverted — cap reached on-chain (gasless dry tab): ${msg}` },
+      });
+      return false;
+    }
+  }
+
+  try {
+    const REPEATS = 40;
+    outer: for (let r = 0; r < REPEATS && !capped; r++) {
+      for await (const chunk of up.chatStream({ model: "local", messages: [] })) {
+        if (state.writerRevoked || !state.grantContext) {
+          pushEvent({ type: "status", agent: "researcher", payload: { msg: "Revoked mid-run — no further draws" } });
+          capped = true;
+          break outer;
+        }
+        pushEvent({ type: "agent_text", agent: "researcher", payload: { text: chunk.text } });
+        state.writerText += chunk.text;
+        accrued += BigInt(chunk.tokens) * 55n;
+        while (accrued >= COMMIT_ATOMS) {
+          accrued -= COMMIT_ATOMS;
+          pending.push(COMMIT_ATOMS);
+          if (pending.length >= BATCH_SIZE) {
+            const ok = await flushBatch();
+            if (!ok) { capped = true; break outer; }
+            if (batchCount >= MAX_BATCHES) { capped = true; break outer; }
+          }
+        }
+      }
+    }
+    if (!capped) {
+      const ok = await flushBatch();
+      if (!ok) capped = true;
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    pushEvent({ type: "status", payload: { msg: `Mainnet batch run error: ${msg}` } });
+    pushEvent({ type: "status", payload: { msg: "Cascade complete" } });
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
+
+  pushEvent({
+    type: "status",
+    payload: { msg: `Mainnet batch run complete — ${batchCount} gasless batches, $${(Number(state.totalDrawn) / 1e6).toFixed(6)} USDC settled` },
+  });
+  pushEvent({ type: "status", payload: { msg: "Cascade complete" } });
+  return NextResponse.json({ ok: true, batches: batchCount, drawnAtoms: state.totalDrawn.toString() });
 }
 
 // ── TESTNET (MetaMask grant): spend the granted ERC-7715 budget ───────────────
