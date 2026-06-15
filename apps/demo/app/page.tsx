@@ -1,5 +1,19 @@
 "use client";
 
+// ── app/page.tsx — the guided Connect → Open → Run → Enforce demo UI ──────────
+// Single-page state machine. It drives MetaMask through the on-chain flow
+// (connect → grant ONE ERC-7715 0.30 USDC/day permission to the server's
+// session key), kicks off the agent run, and renders a live view fed entirely
+// by the /api/events SSE stream: a USDC ticker, batch-aware receipts, the
+// delegation tree, and per-agent streaming consoles.
+//
+// State sources:
+//   • Local UI / wizard state → React useState below.
+//   • Live on-chain progress  → the SSE listener, which mutates ticker /
+//     receipts / agent panels as settlement + agent_text + status events arrive.
+// The two networks share this UI: testnet shows the MetaMask grant + batch
+// settlement; mainnet shows a single "researcher" lane streaming real Venice.
+
 import { useState, useEffect, useRef, useCallback, Fragment } from "react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -100,6 +114,10 @@ export default function DemoPage() {
   }, []);
 
   // ── SSE listener ──────────────────────────────────────────────────────────
+  // Opens one EventSource on /api/events for the life of a run and decodes the
+  // server's BusEvent frames (see lib/bus.ts for the contract). Each event type
+  // updates a different slice of UI state; "Cascade complete" (a status event)
+  // is the run-done sentinel that flips phase → "done".
 
   useEffect(() => {
     if (phase === "idle") return;
@@ -119,11 +137,15 @@ export default function DemoPage() {
         if (evt.type === "settlement" && evt.agent) {
           const agent = evt.agent;
           const reverted = Boolean(evt.payload?.reverted);
+          // amountAtoms = what actually transferred (0 on a revert); attemptedAtoms
+          // = what the over-cap batch tried to draw. The receipt shows the attempted
+          // figure (so the reverted row reads meaningfully), but the ticker totals
+          // below only ever add the actually-settled amount.
           const settledAtoms = BigInt((evt.payload?.amountAtoms as string) ?? "0");
           const attemptedAtoms = evt.payload?.attemptedAtoms
             ? BigInt(evt.payload.attemptedAtoms as string)
             : settledAtoms;
-          const count = evt.payload?.count as number | undefined;
+          const count = evt.payload?.count as number | undefined; // commitments in this batch
           const entry: SettlementEntry = {
             agent,
             amountAtoms: reverted ? attemptedAtoms : settledAtoms,
@@ -134,7 +156,9 @@ export default function DemoPage() {
           };
           setReceipts((prev) => [entry, ...prev].slice(0, 50));
           if (reverted) {
-            // batch reverted atomically — nothing transferred; flash the cap
+            // Batch reverted atomically on-chain (ERC20PeriodTransferEnforcer hit
+            // the cap) — nothing transferred, so add 0 to the ticker; just flash
+            // the cap red as the visual "dry tab" signal.
             setCapRevert(true);
             setTimeout(() => setCapRevert(false), 600);
           } else {
@@ -171,6 +195,8 @@ export default function DemoPage() {
         if (evt.type === "status") {
           const msg = (evt.payload?.msg as string) ?? JSON.stringify(evt.payload);
           addStatus(msg);
+          // "Cascade complete" is the agreed end-of-run sentinel (emitted by every
+          // run path in /api/run, including error exits) → advance to the "done" UI.
           if (msg === "Cascade complete") setPhase("done");
           if (evt.agent && msg.includes("revoked")) {
             const agent = evt.agent;
@@ -385,7 +411,13 @@ export default function DemoPage() {
   const capPct = Math.min(100, (Number(totalDrawn) / Number(totalCapAtoms)) * 100);
   const runLabel = netConfig.isMainnet ? "Run Venice" : "Run the agent";
 
-  // Guided wizard: 1 connect · 2 open/grant · 3 run · 4 spend/enforce
+  // Guided wizard: 1 connect · 2 open/grant · 3 run · 4 spend/enforce.
+  // Step is DERIVED from real state (not a counter) so it always reflects what
+  // the user has actually done:
+  //   1 until the wallet connects (testnet only — mainnet has no connect step),
+  //   2 until the grant is stored (granted),
+  //   3 once granted but still in the "open" phase (ready to Run),
+  //   4 once the run has started (running / done = spend & enforce).
   const wizardStep: 1 | 2 | 3 | 4 =
     !netConfig.isMainnet && !connected
       ? 1
@@ -407,10 +439,15 @@ export default function DemoPage() {
         { k: "run", label: "Run" },
         { k: "enforce", label: "Enforce" },
       ];
+  // Map the 1–4 wizardStep onto the steps array. Mainnet drops the connect step,
+  // so its indices are shifted down by one (offset -2 vs. testnet's -1).
   const activeIndex = netConfig.isMainnet ? wizardStep - 2 : wizardStep - 1;
   const activeKey = steps[Math.max(0, Math.min(activeIndex, steps.length - 1))]?.k;
 
-  // Action-card copy + button for the current step.
+  // Action-card copy + button for the current step. This is the single guided
+  // focus: it resolves activeKey → the heading, explanation, and (optionally) the
+  // one button the user should press next. "running" and "done" have distinct
+  // copy and no/replay button.
   const action: { tag: string; line: string; button?: { label: string; onClick: () => void; disabled?: boolean } } =
     activeKey === "connect"
       ? {
@@ -587,6 +624,10 @@ export default function DemoPage() {
       </div>
 
       {/* delivery — single agent lane; only while/after the agent runs */}
+      {/* Picks the active lane by network: mainnet streams the "researcher"
+          (real Venice), testnet streams the "writer" (simulated). Revoke is
+          testnet-only — mainnet draws are gasless and have no per-agent grant
+          to drop. */}
       {showDelivery && (() => {
         const a = netConfig.isMainnet ? researcher : writer;
         const name = netConfig.isMainnet ? "researcher" : "agent";
@@ -717,6 +758,9 @@ export default function DemoPage() {
                     </div>
                     <p className="pt-1 text-[12.5px] text-ink-mute">
                       {(() => {
+                        // Summarize only confirmed batches: count commitments
+                        // (count per receipt, default 1) across the settled txs;
+                        // reverted batches are excluded since nothing landed.
                         const settled = receipts.filter((r) => !r.reverted && r.txHash);
                         const commits = settled.reduce((n, r) => n + (r.count ?? 1), 0);
                         return settled.length > 0

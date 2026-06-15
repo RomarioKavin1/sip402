@@ -1,3 +1,12 @@
+/**
+ * verify.test.ts — off-chain checks of verifyCommitment (vitest, no chain).
+ *
+ * Exercises only the three short-circuit checks that run BEFORE the on-chain
+ * simulation (payTo mismatch, expired validBefore, used nonce), so no RPC is
+ * required. The authoritative simulation path is proven against Base Sepolia in
+ * scripts/server-proof.ts.
+ */
+
 import { describe, it, expect } from "vitest";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { Address, Hex } from "viem";

@@ -1,5 +1,11 @@
 export const runtime = "nodejs";
 
+// ── /api/events — Server-Sent Events stream (the ticker/receipts/console feed) ─
+// The single SSE endpoint the page subscribes to. Every BusEvent pushed by the
+// API routes (settlement / agent_text / status / tree_update) is serialized as
+// one `data: {json}\n\n` SSE frame here and decoded by page.tsx's onmessage.
+// This is the server→client event contract — both sides agree on BusEvent shape.
+
 import { subscribe } from "../../../lib/bus";
 import type { BusEvent } from "../../../lib/bus";
 

@@ -1,9 +1,17 @@
+// Landing / hero page for the sip402 marketing site.
+// Structure (top → bottom): hero + product mockup → "the one idea" → vs-x402
+// comparison → how-it-works → on-chain proof tables → built-on/packages → footer.
+// The proof tables below link to REAL Basescan transactions — Base Sepolia for
+// every binding requirement, Base mainnet for the two production rails.
+
 import Link from "next/link";
 import HeroTicker from "./HeroTicker";
 
+// Basescan tx explorer roots, per network.
 const SEPOLIA = "https://sepolia.basescan.org/tx";
 const MAINNET = "https://basescan.org/tx";
 
+// Base Sepolia proof rows — one real tx per binding requirement (free testnet).
 const testnetProof: Array<{ label: string; hash: string; href: string }> = [
   { label: "Periodic delegation · cumulative draws", hash: "0xca04…b73b", href: `${SEPOLIA}/0xca047bebde0805b071a3b2eb7d245d61c56ec77550e03635434c6dc20dd8b73b` },
   { label: "Over-cap draw reverted on-chain (dry tab)", hash: "0xc478…2655", href: `${SEPOLIA}/0xc478ba71bbaecb66efe3f65866adc6e57675baad05246b3cb4ac9f9c020a2655` },
@@ -14,6 +22,8 @@ const testnetProof: Array<{ label: string; hash: string; href: string }> = [
   { label: "Revoke halts an agent mid-run", hash: "0x9c2c…1a10f", href: `${SEPOLIA}/0x9c2ccef0bceec5f82ca8d3ddf0d9a461b57b147ef9860285de874dcc1361a10f` },
 ];
 
+// Base mainnet proof — the two production rails, each proven once with real USDC:
+// gasless 1Shot redemption (gas paid in USDC) and paid Venice inference.
 const MAINNET_1SHOT = "0x26a44ffedefb113e6a6c1aa266985076684dea9faaea097f92e4f3e1731940e9";
 const MAINNET_VENICE = "0x2557becd49e3611b92ae089eb00d867672fcba4b61e2abfcbb6b98c010bc43e9";
 

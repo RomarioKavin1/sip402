@@ -1,3 +1,9 @@
+// ── app/layout.tsx — root layout + chrome ─────────────────────────────────────
+// Wraps every page with the document shell, loads the two self-hosted Google
+// fonts (exposed as CSS variables consumed by Tailwind), sets static metadata,
+// and renders the sticky top nav. Purely presentational — no demo state lives
+// here; the guided flow and on-chain logic are all in page.tsx.
+
 import type { Metadata } from "next";
 import { Inter, Geist_Mono } from "next/font/google";
 import "./globals.css";

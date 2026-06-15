@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 
-// Decorative live-feel ticker for the hero. Counts small USDC "sips" upward
-// toward a soft cap, then holds. Purely visual; mirrors the dashboard motif.
+// HeroTicker — decorative client-side USDC count-up rendered in the hero.
+// Counts small USDC "sips" upward toward a soft cap, then loops. Purely visual
+// (no on-chain data); mirrors the dashboard motif and honors reduced-motion.
 const CAP = 1.0;
 
 export default function HeroTicker() {

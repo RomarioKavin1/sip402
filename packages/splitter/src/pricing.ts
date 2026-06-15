@@ -4,9 +4,9 @@
  * USDC_PER_1K_TOKENS: atomic USDC units (6 decimals) charged per 1000 tokens.
  *   2000n = $0.002 per 1k tokens — similar to GPT-3.5-turbo pricing.
  *
- * For the proof script (testnet, localUpstream), a higher price constant is used
- * so the $0.25 batch threshold is crossed within a short local stream.
- * The PROOF_PRICE_PER_TOKEN export is used by the proof script directly.
+ * tokenCostAtoms(tokens): exact per-call cost, integer math, rounded up.
+ * ATOMS_PER_TOKEN: the per-token unit cost (USDC_PER_1K_TOKENS / 1000, min 1),
+ *   used where a single-token granularity is needed (e.g. the streaming drawer).
  */
 
 /** Atomic USDC per 1,000 tokens. 2000n = $0.002 / 1k tokens. */

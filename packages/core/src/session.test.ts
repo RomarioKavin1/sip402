@@ -1,3 +1,7 @@
+/**
+ * session.test.ts — SipMeter accounting: owed accrual, minBatch flush trigger,
+ * cap clamping, and the "session dry" guard.
+ */
 import { describe, it, expect } from "vitest";
 import { SipMeter } from "./session.js";
 

@@ -1,3 +1,9 @@
+// Documentation page for sip402.
+// On-page nav (left rail) → overview → mechanics → packages → quickstart →
+// run-the-demo-locally → binding-requirements table → differentiation → FAQ →
+// proven-on-chain. The proof section at the bottom links to REAL Basescan txs:
+// Base Sepolia for every requirement, Base mainnet for the two production rails.
+
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -7,11 +13,14 @@ export const metadata: Metadata = {
     "How sip402 binds x402 batch-settlement on-chain: ERC-7715 grant, redelegation-as-payment, on-chain period caps, the packages, running the demo, and proven transactions.",
 };
 
+// Basescan tx explorer roots and the two Base mainnet production-rail tx hashes
+// (gasless 1Shot redemption + paid Venice inference), surfaced in the proof table.
 const SEPOLIA = "https://sepolia.basescan.org/tx";
 const MAINNET = "https://basescan.org/tx";
 const MAINNET_1SHOT = "0x26a44ffedefb113e6a6c1aa266985076684dea9faaea097f92e4f3e1731940e9";
 const MAINNET_VENICE = "0x2557becd49e3611b92ae089eb00d867672fcba4b61e2abfcbb6b98c010bc43e9";
 
+// On-this-page anchor nav (left rail), in document order.
 const nav = [
   { id: "overview", label: "Overview" },
   { id: "how", label: "How it works" },

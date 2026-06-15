@@ -1,3 +1,6 @@
+// Root layout for the sip402 site: loads fonts + global styles and wraps every
+// page in the promo banner and sticky top nav.
+
 import type { Metadata } from "next";
 import { Inter, Geist_Mono } from "next/font/google";
 import Link from "next/link";
@@ -23,6 +26,7 @@ export const metadata: Metadata = {
     "The first on-chain, capital-backed binding of x402 batch-settlement. One MetaMask permission opens a metered, revocable USDC session the chain enforces. No custodian.",
 };
 
+// Full-width promo strip pointing at the on-chain evidence section of the docs.
 function PromoBanner() {
   return (
     <div className="w-full bg-ink text-canvas">
@@ -36,6 +40,7 @@ function PromoBanner() {
   );
 }
 
+// Sticky site header: brand, Overview/Docs links, GitHub/npm, and the demo CTA.
 function TopNav() {
   return (
     <header className="sticky top-0 z-50 border-b border-hairline-soft bg-canvas/90 backdrop-blur-md">

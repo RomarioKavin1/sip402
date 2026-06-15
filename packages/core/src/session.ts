@@ -1,5 +1,7 @@
 export interface SipMeterOptions {
+  /** Threshold of accrued `owed` that triggers a draw (the batch trigger). */
   minBatchAtoms: bigint;
+  /** Hard ceiling on total drawn over the session (mirrors the on-chain period cap). */
   capAtoms: bigint;
 }
 
@@ -9,6 +11,12 @@ export interface SipMeterOptions {
  * Tracks cumulative cost (owed) against a session cap (capAtoms).
  * Only triggers an on-chain draw when the accrued amount reaches minBatchAtoms,
  * batching micro-costs to reduce transaction frequency and gas.
+ *
+ * This is the OFF-CHAIN mirror of the on-chain ERC20PeriodTransferEnforcer:
+ * `capAtoms` should match the root delegation's per-period cap so the meter
+ * stops issuing draws before an over-cap batch would revert on redemption.
+ * A "draw" returned here is the amount the seller will settle on-chain (one
+ * commitment / batch); the meter itself moves no funds.
  *
  * All amounts are bigint USDC atoms (6 decimal places, e.g. 1_000_000n = $1.00).
  */
@@ -68,6 +76,9 @@ export class SipMeter {
    */
   flush(): bigint | null {
     if (this.#owed === 0n) return null;
+    // Clamp the draw to remaining budget: never settle past the cap, since the
+    // on-chain enforcer would revert an over-cap redemption anyway. If exactly
+    // at the cap, remaining is 0 and we return null (nothing left to draw).
     const draw = this.#owed < this.remaining ? this.#owed : this.remaining;
     this.#owed = 0n;
     this.#drawn += draw;

@@ -1,3 +1,7 @@
+/**
+ * chain.test.ts — verifies network selection (SIP_NETWORK → mainnet vs testnet)
+ * and that the derived USDC / 1Shot / RPC config resolve consistently.
+ */
 import { describe, it, expect, vi } from "vitest";
 import {
   SIP_NETWORK,

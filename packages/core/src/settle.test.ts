@@ -1,3 +1,7 @@
+/**
+ * settle.test.ts — checks buildTransferExecution encodes a well-formed USDC
+ * transfer(payTo, atoms) Execution against the configured USDC contract.
+ */
 import { describe, it, expect } from "vitest";
 import { decodeFunctionData, erc20Abi } from "viem";
 import { buildTransferExecution } from "./settle.js";

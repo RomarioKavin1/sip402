@@ -1,3 +1,8 @@
+/**
+ * commitment.test.ts — verifies createCommitment builds a leaf-first signed
+ * delegation chain (agent → seller), enforces the session cap, and produces a
+ * deterministic voucher hash with a unique per-commitment nonce/salt.
+ */
 import { describe, it, expect } from "vitest";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import { isHex, type Address } from "viem";

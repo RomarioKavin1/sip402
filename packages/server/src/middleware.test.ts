@@ -1,3 +1,12 @@
+/**
+ * middleware.test.ts — x402 header transport encoding (vitest, no chain).
+ *
+ * Round-trips each x402 header schema (PaymentRequired / PaymentPayload /
+ * SettlementResponse) through encodeBase64Json/decodeBase64Json to lock the
+ * base64-JSON transport encoding — including the bigint→decimal-string rule the
+ * encoder applies so amounts survive JSON serialization.
+ */
+
 import { describe, it, expect } from "vitest";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { Address, Hex } from "viem";

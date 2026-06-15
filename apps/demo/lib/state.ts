@@ -1,3 +1,12 @@
+// ── lib/state.ts — in-memory demo session state ──────────────────────────────
+// All server-side state for one demo session: the generated session/seller
+// keypairs (private keys never leave the server), the stored MetaMask grant
+// context, and running drawn totals. Held on `globalThis` so it survives the
+// dev server's per-request module reloads (a fresh import would otherwise lose
+// the open session between /api/open and /api/run). Single-tenant by design —
+// this is a local demo, not a multi-user service. `resetState()` clears it on
+// each /api/open so replays start clean.
+
 import type { Session } from "@sip402/client";
 import type { Hex } from "viem";
 

@@ -1,5 +1,14 @@
 export const runtime = "nodejs";
 
+// ── /api/revoke — stop an agent from drawing further ──────────────────────────
+// Two paths, depending on how the session was opened:
+//   • Grant path: there is no programmatic Session to revoke on-chain here — the
+//     budget lives in the buyer's MetaMask permission. We stop the agent by
+//     dropping the stored grant context server-side (no further draws can be
+//     redeemed). Full on-chain revocation is the buyer's to do in MetaMask.
+//   • Legacy path: revoke the per-agent programmatic Session on-chain via
+//     revokeSession (signed by the owner key), returning the revoke tx hash.
+
 import { NextResponse } from "next/server";
 import { revokeSession } from "@sip402/client";
 import type { Hex } from "viem";
