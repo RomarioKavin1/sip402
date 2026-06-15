@@ -57,14 +57,55 @@ Testnet uses direct `redeemDelegations` (no bundler); mainnet settles through th
 
 ## Packages
 
-| Package | Role |
+Four building blocks, all **published to npm** (MIT). They split cleanly along the
+protocol: a **buyer** mints commitments, a **seller** verifies and batch-redeems
+them, **core** is the shared settlement + chain layer, and **splitter** is a
+worked-example seller. Install what you need:
+
+```bash
+npm i @sip402/core @sip402/client @sip402/server @sip402/splitter
+```
+
+### Buyer — [`@sip402/client`](https://www.npmjs.com/package/@sip402/client) [![npm](https://img.shields.io/npm/v/@sip402/client.svg)](https://www.npmjs.com/package/@sip402/client)
+
+Opens one capped, periodic payment session and issues a **commitment** per paid
+request. The commitment *is* an ERC-7710 redelegation to the seller — so
+agent-to-agent delegation is the payment primitive itself, not a side channel.
+`openSession` (root periodic grant) · `redelegateSession` (A2A sub-budget) ·
+`createCommitment` (redelegation-as-payment) · `revokeSession` (kill the chain
+on-chain). [source](./packages/client)
+
+### Seller — [`@sip402/server`](https://www.npmjs.com/package/@sip402/server) [![npm](https://img.shields.io/npm/v/@sip402/server.svg)](https://www.npmjs.com/package/@sip402/server)
+
+Verifies each commitment by **simulating its redemption** — so an over-budget draw
+is rejected because the chain reverts it, never because the server says so —
+accumulates vouchers, and redeems **N of them in ONE `redeemDelegations`**.
+`verifyCommitment` · `CommitmentAccumulator` (accept → batch-redeem) ·
+`x402BatchSettlement` (Hono middleware) · `SettlementBus` / `sseHandler` (live
+feed). [source](./packages/server)
+
+### Settlement + chain — [`@sip402/core`](https://www.npmjs.com/package/@sip402/core) [![npm](https://img.shields.io/npm/v/@sip402/core.svg)](https://www.npmjs.com/package/@sip402/core)
+
+The on-chain half both sides share. Network/USDC config (selected by
+`SIP_NETWORK`), `SipMeter` off-chain accounting, and the **`Settler`** abstraction:
+`createDirectRedeemSettler` (testnet, the delegate redeems directly) and
+`createOneShotSettler` (mainnet, **gasless** via the 1Shot relayer, gas in USDC).
+Both expose `settleBatch` — N commitments per tx, with an over-cap batch reverting
+atomically (the "dry tab"). Includes the 1Shot JSON-RPC client. [source](./packages/core)
+
+### Reference seller — [`@sip402/splitter`](https://www.npmjs.com/package/@sip402/splitter) [![npm](https://img.shields.io/npm/v/@sip402/splitter.svg)](https://www.npmjs.com/package/@sip402/splitter)
+
+A worked example: resell **Venice AI** inference per token behind an
+OpenAI-compatible gateway. `StreamingDrawer` fires on-chain draws as the response
+streams; `veniceUpstream` (real Venice, mainnet) / `localUpstream` (deterministic,
+testnet); `makeGateway` wraps any upstream with sip402 metering. [source](./packages/splitter)
+
+### Apps (not published)
+
+| App | Role |
 |---|---|
-| [`@sip402/core`](./packages/core) | Chain config, `SipMeter` accounting, `Settler` (DirectRedeem testnet / OneShot mainnet via 1Shot), 1Shot client. |
-| [`@sip402/client`](./packages/client) | Buyer: `openSession`, `redelegateSession` (A2A), `createCommitment` (redelegation-as-payment), `revokeSession`. |
-| [`@sip402/server`](./packages/server) | Seller: `verifyCommitment` (by simulation), `CommitmentAccumulator` (accept + batch-redeem), x402 HTTP middleware, SSE. |
-| [`@sip402/splitter`](./packages/splitter) | Reference seller reselling Venice behind an OpenAI-compatible gateway; `StreamingDrawer` (live per-batch draws). |
-| [`apps/site`](./apps/site) | Marketing site (hero + docs) — fully static, no backend, deploy anywhere. |
-| [`apps/demo`](./apps/demo) | Local demo with backend: guided Connect → Open → Run → Enforce, a real MetaMask ERC-7715 grant, batched draws, and on-chain cap revert. See [its README](./apps/demo/README.md). |
+| [`apps/site`](./apps/site) | Marketing site + docs — fully static, no backend, deploy anywhere. |
+| [`apps/demo`](./apps/demo) | Local backend demo: guided Connect → Open → Run → Enforce with a real MetaMask ERC-7715 grant, batched draws, and on-chain cap revert — on **both** Base Sepolia and Base mainnet (gasless via 1Shot). See [its README](./apps/demo/README.md). |
 
 ## How it differs
 
