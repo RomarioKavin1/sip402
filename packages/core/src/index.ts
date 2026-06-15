@@ -7,7 +7,7 @@
  *   - settle.js   the Settler abstraction (DirectRedeem on testnet, OneShot on mainnet)
  *   - oneshot.js  the 1Shot gasless-relayer JSON-RPC client
  */
-export const SIP402_VERSION = "0.1.1";
+export const SIP402_VERSION = "0.1.2";
 
 export * from "./chain.js";
 export * from "./session.js";

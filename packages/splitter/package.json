@@ -1,6 +1,6 @@
 {
   "name": "@sip402/splitter",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "sip402 reference seller — resell Venice AI inference billed per token via streaming on-chain draws.",
   "license": "MIT",
   "author": "Romario Kavin",
