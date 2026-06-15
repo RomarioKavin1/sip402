@@ -4,6 +4,7 @@
 import type { Metadata } from "next";
 import { Inter, Geist_Mono } from "next/font/google";
 import Link from "next/link";
+import { Logo } from "./Logo";
 import "./globals.css";
 
 const inter = Inter({
@@ -45,8 +46,8 @@ function TopNav() {
   return (
     <header className="sticky top-0 z-50 border-b border-hairline-soft bg-canvas/90 backdrop-blur-md">
       <nav className="mx-auto flex h-16 max-w-[1280px] items-center justify-between px-5 sm:px-8">
-        <Link href="/" className="text-[18px] font-bold tracking-tight text-ink">
-          sip402
+        <Link href="/" aria-label="sip402 home" className="transition-opacity hover:opacity-80">
+          <Logo size={30} />
         </Link>
         <div className="hidden items-center gap-1 md:flex">
           <Link
