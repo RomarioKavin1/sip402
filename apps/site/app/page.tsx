@@ -127,7 +127,7 @@ export default function Home() {
               <span aria-hidden>▶</span> Watch the demo
             </a>
             <a
-              href="https://www.youtube.com/watch?v=Fv4UGc-FGMw"
+              href="https://www.youtube.com/watch?v=E8BJL7MallY"
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 font-bold text-ink transition-colors hover:text-primary"

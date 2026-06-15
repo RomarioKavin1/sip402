@@ -2,7 +2,7 @@
 
 **x402's payment stream is centralised. sip402 decentralises it.**
 
-**[▶ Demo video](https://www.youtube.com/watch?v=Qz2_zNbeceo)** · **[▶ Pitch video](https://www.youtube.com/watch?v=Fv4UGc-FGMw)** · **[Live site ↗](https://sip402.vercel.app)** · **[Docs ↗](https://sip402.vercel.app/docs)** · **[npm](https://www.npmjs.com/package/@sip402/core)** · [SPEC](./SPEC.md) · [Feedback](./FEEDBACK.md)
+**[▶ Demo video](https://www.youtube.com/watch?v=Qz2_zNbeceo)** · **[▶ Pitch video](https://www.youtube.com/watch?v=E8BJL7MallY)** · **[Live site ↗](https://sip402.vercel.app)** · **[Docs ↗](https://sip402.vercel.app/docs)** · **[npm](https://www.npmjs.com/package/@sip402/core)** · [SPEC](./SPEC.md) · [Feedback](./FEEDBACK.md)
 
 x402 ships a `batch-settlement` scheme for **streaming, session-based payments** — pay as a resource is delivered, settle in batches. But its only real-world binding, **`cloudflare:402`**, is **centralised**: a credit balance held by the network, settled off-chain, with the network as merchant-of-record. You stream now and trust an intermediary to settle later. The trust-minimised, on-chain version was described in the spec but **never shipped**.
 
