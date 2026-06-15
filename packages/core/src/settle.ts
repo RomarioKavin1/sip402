@@ -427,5 +427,127 @@ export function createOneShotSettler(opts: {
       }
       return { txHash };
     },
+
+    // Batch-settle N commitments in ONE gasless relayed redeemDelegations: a single
+    // delegation scoped to (fee + Σ draws) authorizes N+1 executions [fee, w1..wN].
+    // The relayer merges them into one tx (proven: relayer_estimate accepts the
+    // shape). Same flow as settle() — only the executions array grows.
+    async settleBatch({ signedDelegation, payTo, atomsList }) {
+      if (!ONESHOT_TARGET_ADDRESS) {
+        throw new Error(
+          "OneShotSettler is mainnet-only (ONESHOT_TARGET_ADDRESS undefined). " +
+          "Use createDirectRedeemSettler() on testnet."
+        );
+      }
+      if (!atomsList.length) throw new Error("settleBatch requires at least one commitment");
+
+      const eoa = opts.ownerAccount;
+      const totalAtoms = atomsList.reduce((a, b) => a + b, 0n);
+
+      // GRANT MODE: the caller passes the redelegation chain (session → 1Shot target,
+      // inheriting the grant's ERC20PeriodTransferEnforcer) as an array of relayer-JSON
+      // delegations. We redeem THAT, so the on-chain period cap applies and an over-cap
+      // batch reverts atomically — proven via relayer_estimate in scripts/_probe-grant.
+      // SELF-SIGN MODE (no signedDelegation): sign a simple owner→target delegation
+      // scoped to exactly (fee + Σ), which has no period cap.
+      const grantChain = Array.isArray(signedDelegation)
+        ? (signedDelegation as Record<string, unknown>[])
+        : null;
+
+      // [1] Capabilities — authoritative targetAddress (delegation `to`) + feeCollector.
+      const caps = await getCapabilities(String(CHAIN_ID), relayerUrl);
+      const chainCaps = caps[String(CHAIN_ID)];
+      if (!chainCaps) throw new Error(`1Shot relayer has no capabilities for chain ${CHAIN_ID}`);
+      const { targetAddress, feeCollector } = chainCaps;
+
+      // [2] Self-sign only: build the owner's Stateless7702 delegator + (first use)
+      // an EIP-7702 authorization so the relayer upgrades the EOA in-flight. In grant
+      // mode the grantor is already a deployed smart account, so neither is needed.
+      let smartAccount: Awaited<ReturnType<typeof toMetaMaskSmartAccount>> | undefined;
+      let authorizationList: AuthorizationListEntry[] | undefined;
+      if (!grantChain) {
+        smartAccount = await toMetaMaskSmartAccount({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          client: publicClient as any,
+          implementation: Implementation.Stateless7702,
+          address: eoa.address,
+          signer: { account: eoa },
+        });
+        const code = await publicClient.getCode({ address: eoa.address });
+        const needsUpgrade = !code || code === "0x";
+        if (needsUpgrade) {
+          const nonce = await publicClient.getTransactionCount({ address: eoa.address, blockTag: "pending" });
+          if (typeof eoa.signAuthorization !== "function") {
+            throw new Error("ownerAccount cannot sign EIP-7702 authorizations (needs a LocalAccount from privateKeyToAccount)");
+          }
+          const auth = await eoa.signAuthorization({
+            chainId: CHAIN_ID,
+            contractAddress: getAddress(env.implementations.EIP7702StatelessDeleGatorImpl),
+            nonce,
+          });
+          authorizationList = [
+            { address: auth.address, chainId: auth.chainId, nonce: auth.nonce, r: auth.r, s: auth.s, yParity: auth.yParity ?? 0 },
+          ];
+        }
+      }
+
+      // [3] Build the bundle: executions = [fee → feeCollector, work_i → payTo …].
+      // permissionContext is the provided grant chain (grant mode) or a freshly
+      // signed owner→target delegation scoped to (fee + Σ) (self-sign mode).
+      const buildBundle = async (feeAmount: bigint): Promise<Send7710Params> => {
+        const feeCalldata = encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [feeCollector, feeAmount] });
+        const workExecutions = atomsList.map((atoms) => {
+          const { callData } = buildTransferExecution(payTo, atoms);
+          return { target: USDC, value: "0", data: callData };
+        });
+        const executions = [{ target: USDC, value: "0", data: feeCalldata }, ...workExecutions];
+
+        let permissionContext: Record<string, unknown>[];
+        if (grantChain) {
+          permissionContext = grantChain;
+        } else {
+          const delegation = createDelegation({
+            to: targetAddress,
+            from: smartAccount!.address,
+            environment: smartAccount!.environment,
+            salt: bytesToHex(Uint8Array.from(randomBytes(32))) as Hex,
+            scope: { type: ScopeType.Erc20TransferAmount, tokenAddress: USDC, maxAmount: feeAmount + totalAtoms },
+          });
+          const signature = await smartAccount!.signDelegation({ delegation });
+          permissionContext = [toRelayerJson({ ...delegation, signature }) as Record<string, unknown>];
+        }
+
+        return {
+          relayerUrl,
+          chainId: String(CHAIN_ID),
+          transactions: [{ permissionContext: permissionContext as never, executions: executions as never }],
+          ...(authorizationList ? { authorizationList } : {}),
+          ...(opts.destinationUrl ? { destinationUrl: opts.destinationUrl } : {}),
+        };
+      };
+
+      // [4] Estimate (mock fee), re-sign at the exact required fee if it differs.
+      const mockFee = parseUnits("0.01", 6);
+      let params = await buildBundle(mockFee);
+      let estimate = await estimate7710Transaction(params);
+      if (!estimate.success) throw new Error(`1Shot batch estimate failed: ${estimate.error ?? "(no error)"}`);
+      const requiredFee = BigInt(estimate.requiredPaymentAmount ?? "0");
+      if (requiredFee !== mockFee) {
+        params = await buildBundle(requiredFee);
+        estimate = await estimate7710Transaction(params);
+        if (!estimate.success) throw new Error(`1Shot batch re-estimate failed: ${estimate.error ?? "(no error)"}`);
+      }
+      if (!estimate.context) throw new Error("1Shot batch estimate returned no price-lock context");
+
+      // [5] Send + [6] poll until terminal.
+      const taskId = await send7710Transaction({ ...params, context: estimate.context });
+      const final = await pollUntilTerminal(taskId, { relayerUrl });
+      if (final.status !== 200) {
+        throw new Error(`1Shot batch relay failed (status ${final.status}): ` + (final.message ?? JSON.stringify(final.data)));
+      }
+      const txHash = (final.receipt?.transactionHash ?? final.hash) as string;
+      if (!txHash) throw new Error("1Shot batch confirmed but returned no tx hash");
+      return { txHash, count: atomsList.length, totalAtoms };
+    },
   };
 }
