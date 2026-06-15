@@ -6,6 +6,7 @@
 
 import type { Metadata } from "next";
 import { Inter, Geist_Mono } from "next/font/google";
+import { IS_MAINNET } from "@sip402/core";
 import "./globals.css";
 
 const inter = Inter({
@@ -37,8 +38,14 @@ function TopNav() {
           <span className="ml-2 text-[13px] text-ink-mute">demo</span>
         </span>
         <div className="flex items-center gap-4 text-[14px]">
-          <span className="rounded-pill border border-hairline px-2.5 py-1 text-[12.5px] text-ink-mute">
-            local · Base Sepolia
+          <span
+            className={`rounded-pill border px-2.5 py-1 text-[12.5px] ${
+              IS_MAINNET
+                ? "border-primary/40 bg-primary-subdued/30 text-primary-deep"
+                : "border-hairline text-ink-mute"
+            }`}
+          >
+            local · {IS_MAINNET ? "Base mainnet" : "Base Sepolia"}
           </span>
           <a
             href="https://github.com/RomarioKavin1/sip402"

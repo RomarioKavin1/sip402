@@ -17,7 +17,13 @@ export interface BusEvent {
 
 type Listener = (e: BusEvent) => void;
 
-const listeners = new Set<Listener>();
+// Held on globalThis so the SSE route (/api/events) and the routes that call
+// pushEvent (/api/run, /api/open, …) share ONE listener set even when Next's dev
+// server compiles them into separate module instances. A plain module-scoped Set
+// would be duplicated per route in dev, so settlement events would never reach the
+// browser's EventSource and the live ticker/receipts would stay frozen.
+const g = globalThis as typeof globalThis & { __sip402Bus?: Set<Listener> };
+const listeners: Set<Listener> = (g.__sip402Bus ??= new Set<Listener>());
 
 // Fan a single event out to every live SSE subscriber. A throwing listener
 // (e.g. a browser that disconnected mid-enqueue) is skipped, not fatal.

@@ -76,7 +76,7 @@ export async function POST(req: Request) {
   pushEvent({
     type: "status",
     payload: {
-      msg: "Permission granted via MetaMask — 0.30 USDC/day cap stored",
+      msg: "Permission granted via MetaMask — periodic spending cap stored on-chain",
       sessionAddress: state.sessionAddress,
       from: state.grantFrom,
     },
